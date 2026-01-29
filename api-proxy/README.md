@@ -174,32 +174,35 @@ API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
 
 ### 3. Generate token.json
 
-Use Google's quickstart to generate `token.json`:
+Use the included helper script to generate `token.json`:
 
-```python
-from google_auth_oauthlib.flow import InstalledAppFlow
+```bash
+# If using uv (recommended)
+uv run python scripts/generate_token.py --credentials credentials.json
 
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
-
-flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-creds = flow.run_local_server(port=0)
-
-# Save the credentials
-with open('token.json', 'w') as f:
-    f.write(creds.to_json())
+# Or with pip
+pip install google-auth-oauthlib
+python scripts/generate_token.py --credentials credentials.json
 ```
 
-The `token.json` file should look like:
+The script will:
+1. Open a browser window for Google authentication
+2. Request the `gmail.modify` scope
+3. Save the token with restricted permissions (600)
 
-```json
-{
-  "token": "ya29.a0AfH6SM...",
-  "refresh_token": "1//0eXx...",
-  "token_uri": "https://oauth2.googleapis.com/token",
-  "client_id": "123456789-abc.apps.googleusercontent.com",
-  "client_secret": "GOCSPX-...",
-  "scopes": ["https://www.googleapis.com/auth/gmail.modify"]
-}
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--credentials`, `-c` | `credentials.json` | Path to OAuth client credentials |
+| `--output`, `-o` | `token.json` | Path for output token file |
+
+**Example with custom paths:**
+
+```bash
+python scripts/generate_token.py \
+  --credentials ~/Downloads/client_secret.json \
+  --output ~/.config/api-proxy/token.json
 ```
 
 ## Gmail API Reference
