@@ -154,6 +154,41 @@ API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
 | Unknown API key | 401 | `{"error": "auth_error", "message": "Invalid API key"}` |
 | Disabled API key | 403 | `{"error": "auth_error", "message": "API key is disabled"}` |
 
+### All Status Codes
+
+| Code | Error Type | Description |
+|------|------------|-------------|
+| 200 | - | Success |
+| 400 | `proxy_error` | Invalid request parameter (userId, message_id, label_id format) |
+| 401 | `auth_error` | Missing or invalid API key |
+| 403 | `auth_error` | API key is disabled |
+| 403 | `forbidden` | Blocked operation (send, drafts, etc.) |
+| 403 | `forbidden` | Confirmation rejected by operator |
+| 422 | `proxy_error` | Request validation failed (malformed JSON, missing fields) |
+| 502 | `backend_error` | Backend unreachable or authentication failed |
+| 4xx/5xx | `backend_error` | Error passed through from Gmail API |
+
+### Error Response Format
+
+All errors follow this structure:
+
+```json
+{
+  "error": "error_type",
+  "message": "Human-readable description"
+}
+```
+
+Backend errors from Gmail include additional details:
+
+```json
+{
+  "error": "backend_error",
+  "message": "Backend API error",
+  "details": { ... }
+}
+```
+
 ## Google OAuth Setup
 
 ### 1. Create a Google Cloud Project
