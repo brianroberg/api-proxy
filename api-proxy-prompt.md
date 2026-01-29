@@ -1,39 +1,124 @@
-# Build a Gmail API Proxy Server
+# Build an API Proxy Server
 
 ## Overview
 
-Build a proxy server that sits between an AI email agent and the Gmail API. The proxy enforces capability restrictions at the API level—specifically, it allows read operations and label modifications but **blocks all email sending capabilities**.
+Build a proxy server that sits between AI agents and backend APIs. The proxy enforces capability restrictions at the API level—allowing only specific operations while blocking others that would be dangerous in agent hands.
 
-This is necessary because Gmail's OAuth scopes don't provide fine-grained control: the `gmail.modify` scope (required for label changes) also grants send permission. The proxy provides the missing capability boundary.
+The initial implementation focuses on Gmail, where it allows read operations and label modifications but **blocks all email sending capabilities**. This is necessary because Gmail's OAuth scopes don't provide fine-grained control: the `gmail.modify` scope (required for label changes) also grants send permission. The proxy provides the missing capability boundary.
+
+The architecture is designed to support additional APIs in the future—both Google APIs (Calendar, Drive) and non-Google APIs.
 
 ## Architecture
 
 ```
-Email Agent (untrusted)
+AI Agent (untrusted)
     │
-    │ HTTP requests (no Gmail credentials)
+    │ HTTP requests with API key (no backend credentials)
     ▼
-gmail-api-proxy (this server)
+api-proxy (this server)
+    │
+    ├──► Invalid/missing API key → 401 Unauthorized
     │
     ├──► Blocked operations → 403 Forbidden (always)
     │
     ├──► Allowed operations → [Human confirmation if enabled]
     │                              │
-    │                              ├── Approved → Forward to Gmail API
+    │                              ├── Approved → Forward to backend API
     │                              └── Rejected → 403 Forbidden
     │
-    │ Gmail API (OAuth with gmail.modify scope)
+    │ Backend APIs (with credentials)
     ▼
-Gmail
+Backend Services (Gmail, Calendar, etc.)
 ```
 
-The email agent never receives Gmail OAuth credentials. It only knows how to talk to this proxy. A human operator can optionally review and approve operations before they are forwarded to Gmail.
+The AI agent never receives backend API credentials. It only knows how to talk to this proxy using its API key. A human operator can optionally review and approve operations before they are forwarded to the backend.
 
-## Allowed Gmail API Operations
+## Agent Authentication
+
+Agents must authenticate to the proxy using an API key. This provides:
+- **Access control**: Only authorized agents can use the proxy
+- **Audit trail**: All requests are associated with a specific API key
+- **Revocation**: Compromised or retired agents can be disabled instantly
+
+### API Key Format
+
+API keys are opaque tokens with the prefix `aproxy_` followed by 32 random alphanumeric characters:
+```
+aproxy_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+```
+
+### Authentication Header
+
+Agents include the API key in the `Authorization` header:
+```
+Authorization: Bearer aproxy_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+```
+
+### Key Storage
+
+API keys are stored in a JSON file (`api_keys.json` by default) with metadata:
+```json
+{
+  "keys": {
+    "aproxy_a1b2c3d4...": {
+      "name": "email-agent-prod",
+      "created_at": "2025-01-15T10:30:00Z",
+      "last_used_at": "2025-01-20T14:22:00Z",
+      "enabled": true
+    }
+  }
+}
+```
+
+The file path can be configured via `--api-keys-file` or the `API_KEYS_FILE` environment variable.
+
+### Key Management Script
+
+The proxy includes a CLI tool for managing API keys:
+
+```bash
+# Create a new API key
+uv run api-proxy-keys create --name "email-agent-prod"
+# Output: Created API key 'email-agent-prod': aproxy_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+
+# List all API keys
+uv run api-proxy-keys list
+# Output:
+# NAME              CREATED              LAST USED            ENABLED
+# email-agent-prod  2025-01-15 10:30:00  2025-01-20 14:22:00  yes
+# calendar-agent    2025-01-18 09:00:00  never                yes
+
+# Disable an API key (keeps history, but rejects requests)
+uv run api-proxy-keys disable --name "email-agent-prod"
+
+# Re-enable a disabled API key
+uv run api-proxy-keys enable --name "email-agent-prod"
+
+# Revoke an API key (permanent deletion)
+uv run api-proxy-keys revoke --name "email-agent-prod"
+
+# Show details for a specific key
+uv run api-proxy-keys show --name "email-agent-prod"
+```
+
+### Authentication Errors
+
+| Scenario | Status Code | Response |
+|----------|-------------|----------|
+| Missing `Authorization` header | 401 | `{"error": "Missing Authorization header"}` |
+| Invalid format (not `Bearer <key>`) | 401 | `{"error": "Invalid Authorization header format"}` |
+| Unknown API key | 401 | `{"error": "Invalid API key"}` |
+| Disabled API key | 403 | `{"error": "API key is disabled"}` |
+
+## Gmail API Operations
+
+The initial implementation proxies the Gmail API. Additional APIs can be added following the same pattern.
+
+### Allowed Operations
 
 The proxy should expose these endpoints, forwarding to the Gmail API:
 
-### Read Operations
+#### Read Operations
 
 | Proxy Endpoint | Gmail API | Purpose |
 |----------------|-----------|---------|
@@ -42,7 +127,7 @@ The proxy should expose these endpoints, forwarding to the Gmail API:
 | `GET /gmail/v1/users/{userId}/labels` | `users.labels.list` | List available labels |
 | `GET /gmail/v1/users/{userId}/labels/{id}` | `users.labels.get` | Get label details |
 
-### Modify Operations
+#### Modify Operations
 
 | Proxy Endpoint | Gmail API | Purpose |
 |----------------|-----------|---------|
@@ -50,7 +135,7 @@ The proxy should expose these endpoints, forwarding to the Gmail API:
 | `POST /gmail/v1/users/{userId}/messages/{id}/trash` | `users.messages.trash` | Move to trash |
 | `POST /gmail/v1/users/{userId}/messages/{id}/untrash` | `users.messages.untrash` | Remove from trash |
 
-## Blocked Operations (CRITICAL)
+### Blocked Operations (CRITICAL)
 
 The proxy MUST reject these with `403 Forbidden`:
 
@@ -153,31 +238,43 @@ Dev dependencies:
 ### Linting
 Use `ruff` for linting and formatting. Include a `ruff.toml` or configure in `pyproject.toml` with sensible defaults.
 
-### Authentication
+### Google OAuth (Backend Authentication)
 The proxy should:
-1. Load Gmail OAuth credentials from a `token.json` file (same format as the Google Python quickstart)
+1. Load Google OAuth credentials from a `token.json` file (same format as the Google Python quickstart)
 2. Automatically refresh expired tokens
 3. NOT expose credentials to callers in any way
 
-The proxy itself does not need to authenticate its callers initially (it's assumed to run on a trusted local network), but structure the code so authentication middleware could be added later.
+### Agent Authentication (Frontend Authentication)
+The proxy requires all callers to authenticate with an API key:
+1. Load API keys from `api_keys.json` (or path specified by `--api-keys-file`)
+2. Validate the `Authorization: Bearer <key>` header on every request (except `/health`)
+3. Update `last_used_at` timestamp on successful authentication
+4. Return appropriate error codes (401 for invalid/missing, 403 for disabled)
 
 ## Project Structure
 
 ```
-gmail-api-proxy/
+api-proxy/
 ├── src/
-│   └── gmail_api_proxy/
+│   └── api_proxy/
 │       ├── __init__.py
 │       ├── main.py           # FastAPI app, CLI argument parsing, health check
-│       ├── gmail_client.py   # Gmail API wrapper
-│       ├── handlers.py       # Route handlers
-│       ├── models.py         # Pydantic models
+│       ├── auth.py           # API key authentication middleware
+│       ├── keys.py           # API key management (CLI tool)
+│       ├── gmail/
+│       │   ├── __init__.py
+│       │   ├── client.py     # Gmail API wrapper
+│       │   ├── handlers.py   # Gmail route handlers
+│       │   └── models.py     # Gmail-specific Pydantic models
+│       ├── models.py         # Shared Pydantic models
 │       ├── config.py         # Configuration management
 │       └── confirmation.py   # Human-in-the-loop confirmation logic
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py           # Fixtures
-│   ├── test_handlers.py      # Handler tests
+│   ├── test_auth.py          # API key authentication tests
+│   ├── test_keys.py          # Key management CLI tests
+│   ├── test_gmail_handlers.py # Gmail handler tests
 │   ├── test_gmail_client.py  # Gmail client tests
 │   ├── test_security.py      # Security/blocking tests
 │   ├── test_confirmation.py  # Confirmation feature tests
@@ -192,36 +289,47 @@ gmail-api-proxy/
 
 The README should be thorough and include:
 
-1. **Overview** — What the proxy does and why it exists (the Gmail scope limitation problem)
+1. **Overview** — What the proxy does and why it exists (API scope limitations, with Gmail as the primary example)
 
-2. **Architecture diagram** — ASCII showing the trust boundary and confirmation flow
+2. **Architecture diagram** — ASCII showing the trust boundary, API key authentication, and confirmation flow
 
 3. **Quick Start** — Minimal steps to get running:
-   - Prerequisites (Python, uv, Gmail OAuth credentials)
+   - Prerequisites (Python, uv, Google OAuth credentials)
    - Installation
+   - Creating an API key for your agent
    - Running the server (with default confirmation mode)
+   - Making your first request (with API key in Authorization header)
 
-4. **Gmail OAuth Setup** — Step-by-step instructions for:
+4. **Agent Authentication** — Document the API key system:
+   - Why API keys are required
+   - API key format and header format
+   - Using the key management CLI (`api-proxy-keys`)
+   - Creating, listing, disabling, and revoking keys
+   - Key storage file format and location
+   - Authentication error responses
+
+5. **Google OAuth Setup** — Step-by-step instructions for:
    - Creating a Google Cloud project
-   - Enabling the Gmail API
+   - Enabling required APIs (Gmail, Calendar, etc.)
    - Creating OAuth credentials
    - Generating `token.json`
 
-5. **API Reference** — Document every endpoint:
+6. **Gmail API Reference** — Document every Gmail endpoint:
    - Method and path
    - Query parameters (for list operations)
    - Request body (for modify operations)
    - Response format
-   - Example curl commands
+   - Example curl commands (including Authorization header)
 
-6. **Security Model** — Explain:
+7. **Security Model** — Explain:
+   - The two-layer security model (API keys + operation restrictions)
    - What is allowed and why
    - What is blocked and why
    - The allowlist approach
-   - How credentials are protected
+   - How Google credentials are protected
    - How human-in-the-loop confirmation adds an additional safety layer
 
-7. **Human-in-the-Loop Confirmation** — Document the confirmation feature:
+8. **Human-in-the-Loop Confirmation** — Document the confirmation feature:
    - Purpose and use cases
    - Command-line options (`--confirm-all`, `--confirm-modify`, `--no-confirm`)
    - Default behavior (confirmation required for modify operations)
@@ -229,17 +337,22 @@ The README should be thorough and include:
    - How to approve or reject requests
    - Note that blocked operations are always blocked regardless of confirmation settings
 
-8. **Configuration** — Environment variables and config options
+9. **Configuration** — Environment variables and config options:
+   - `--api-keys-file` / `API_KEYS_FILE`
+   - Token file location
+   - Port and host settings
 
-9. **Development** — How to:
-   - Set up dev environment
-   - Run tests
-   - Run linting
+10. **Development** — How to:
+    - Set up dev environment
+    - Run tests
+    - Run linting
 
-10. **Deployment Considerations** — Notes on:
+11. **Adding New APIs** — Brief guide for extending to support additional APIs (reserved for future expansion)
+
+12. **Deployment Considerations** — Notes on:
     - Running in production
+    - Protecting the API keys file
     - Choosing the appropriate confirmation mode for your use case
-    - Adding authentication
     - Logging and monitoring
 
 ## Test Suite Requirements
@@ -259,22 +372,73 @@ Review the test structure in `/tmp/datasette-enrichments/tests/` and follow simi
 
 ### Test Categories
 
-#### 1. Handler Tests (`test_handlers.py`)
-Test each allowed endpoint:
+#### 1. Authentication Tests (`test_auth.py`)
+Test the API key authentication middleware:
+
+**Valid authentication:**
+- Request with valid API key succeeds
+- API key `last_used_at` is updated on successful request
+
+**Invalid authentication:**
+- Missing `Authorization` header returns 401
+- Malformed header (not `Bearer <key>`) returns 401
+- Unknown API key returns 401
+- Disabled API key returns 403
+
+**Edge cases:**
+- Empty API key returns 401
+- Whitespace-only API key returns 401
+- API key with wrong prefix returns 401
+
+#### 2. Key Management Tests (`test_keys.py`)
+Test the API key management CLI:
+
+**Create command:**
+- Creates key with valid name
+- Generated key has correct format (`aproxy_` + 32 chars)
+- Stores key with correct metadata (name, created_at, enabled=true)
+- Rejects duplicate names
+- Rejects invalid names (empty, too long, special characters)
+
+**List command:**
+- Lists all keys with correct columns
+- Shows "never" for keys that haven't been used
+- Handles empty key file gracefully
+
+**Disable/Enable commands:**
+- Disable sets `enabled: false`
+- Enable sets `enabled: true`
+- Operations on non-existent key show error
+
+**Revoke command:**
+- Removes key from file entirely
+- Revoke on non-existent key shows error
+
+**Show command:**
+- Displays all metadata for a key
+- Masks the actual key value (shows only last 4 chars)
+
+**File handling:**
+- Creates key file if it doesn't exist
+- Handles corrupted/invalid JSON gracefully
+- Preserves existing keys when adding new ones
+
+#### 3. Gmail Handler Tests (`test_gmail_handlers.py`)
+Test each allowed Gmail endpoint:
 - Returns correct status codes
 - Properly forwards query parameters
 - Properly forwards request bodies
 - Returns Gmail API responses correctly
 - Handles Gmail API errors gracefully
 
-#### 2. Gmail Client Tests (`test_gmail_client.py`)
+#### 4. Gmail Client Tests (`test_gmail_client.py`)
 Test the Gmail API wrapper:
 - Token loading
 - Token refresh
 - API call construction
 - Error handling
 
-#### 3. Security Tests (`test_security.py`)
+#### 5. Security Tests (`test_security.py`)
 **Critical** — Test that blocked operations are actually blocked:
 - `POST /gmail/v1/users/me/messages/send` returns 403
 - `POST /gmail/v1/users/me/drafts` returns 403
@@ -292,7 +456,12 @@ Test that blocked operations remain blocked regardless of confirmation mode:
 - Blocked operations return 403 even with `--no-confirm`
 - Blocked operations never trigger a confirmation prompt
 
-#### 4. Confirmation Tests (`test_confirmation.py`)
+Test that authentication is enforced on all endpoints:
+- All proxy endpoints require authentication (not just Gmail)
+- Health check endpoint does NOT require authentication
+- Blocked operations return 401 before checking if operation is allowed (fail fast)
+
+#### 6. Confirmation Tests (`test_confirmation.py`)
 Test the human-in-the-loop confirmation feature:
 
 **Command-line argument parsing:**
@@ -322,7 +491,7 @@ Test the human-in-the-loop confirmation feature:
 - Mock stdout/stderr to verify prompt output
 - Use fixtures to test different confirmation modes
 
-#### 5. Documentation Tests (`test_docs.py`)
+#### 7. Documentation Tests (`test_docs.py`)
 Use pytest's built-in subtests feature (available in pytest 9.0+) to verify documentation completeness.
 
 Follow the pattern described at https://til.simonwillison.net/pytest/subtests:
@@ -376,54 +545,75 @@ Create fixtures for common Gmail API responses:
 - Never leak sensitive information in error messages
 
 ### Logging
-- Log all requests (method, path, status code)
+- Log all requests (method, path, status code, API key name)
+- Log authentication failures at WARNING level (include key prefix if available, never full key)
 - Log blocked attempts at WARNING level
 - Log confirmation prompts and decisions (approved/rejected) at INFO level
-- Log Gmail API errors at ERROR level
+- Log backend API errors at ERROR level
 - Never log request/response bodies (may contain email content)
+- Never log full API keys (only the key name or last 4 characters)
 
 ### Request Forwarding
 For allowed endpoints, the proxy should:
-1. Validate the request path against the allowlist
-2. If confirmation is required for this request (based on mode and operation type):
+1. Validate API key from `Authorization` header (return 401/403 if invalid)
+2. Validate the request path against the allowlist (return 403 if blocked)
+3. If confirmation is required for this request (based on mode and operation type):
    a. Display the confirmation prompt to the operator
    b. Wait for operator response
    c. If rejected, return 403 Forbidden immediately
-3. Forward query parameters unchanged
-4. Forward request body unchanged (for POST/PUT)
-5. Add OAuth credentials to the outgoing request
-6. Return the Gmail API response unchanged
+4. Forward query parameters unchanged
+5. Forward request body unchanged (for POST/PUT)
+6. Add backend credentials to the outgoing request (Google OAuth for Gmail)
+7. Return the backend API response unchanged
 
 ### Path Handling
 The proxy mirrors Gmail API paths exactly. This makes it a drop-in replacement—clients can use standard Gmail client libraries pointed at the proxy URL instead of `https://gmail.googleapis.com`.
 
 ## Deliverables Checklist
 
-- [ ] `pyproject.toml` with all dependencies and metadata
-- [ ] `src/gmail_api_proxy/` package with all modules including `confirmation.py`
+- [ ] `pyproject.toml` with all dependencies, metadata, and script entry points
+- [ ] `src/api_proxy/` package with all modules
+- [ ] `src/api_proxy/auth.py` — API key authentication middleware
+- [ ] `src/api_proxy/keys.py` — API key management CLI tool
+- [ ] `src/api_proxy/gmail/` — Gmail-specific handlers and client
+- [ ] Script entry points in `pyproject.toml`:
+  - `api-proxy` — main server
+  - `api-proxy-keys` — key management CLI
 - [ ] Command-line argument parsing for `--confirm-all`, `--confirm-modify`, `--no-confirm`
+- [ ] Command-line argument `--api-keys-file` for specifying key storage location
 - [ ] Human-in-the-loop confirmation prompts working correctly
-- [ ] Complete test suite in `tests/` including `test_confirmation.py`
-- [ ] `README.md` with all sections described above (including confirmation documentation)
+- [ ] Complete test suite in `tests/` including `test_auth.py` and `test_keys.py`
+- [ ] `README.md` with all sections described above (including authentication documentation)
 - [ ] `CLAUDE.md` with repo-specific instructions for AI agents
 - [ ] `.gitignore` appropriate for Python projects
 - [ ] `ruff.toml` or ruff config in `pyproject.toml`
 - [ ] All tests passing
 - [ ] All linting passing
 - [ ] Example `token.json.example` showing expected format (with placeholder values)
+- [ ] Example `api_keys.json.example` showing expected format (with placeholder values)
 
 ## Verification
 
 After implementation, verify:
 
-1. **Functionality**: Run the server and test allowed operations work
-2. **Security**: Verify blocked operations return 403
-3. **Confirmation modes**:
+1. **Key management**:
+   - `uv run api-proxy-keys create --name test-agent` creates a key
+   - `uv run api-proxy-keys list` shows the key
+   - `uv run api-proxy-keys disable --name test-agent` disables it
+   - `uv run api-proxy-keys enable --name test-agent` re-enables it
+2. **Authentication**:
+   - Requests without API key return 401
+   - Requests with invalid API key return 401
+   - Requests with disabled API key return 403
+   - Requests with valid API key proceed to handler
+3. **Functionality**: Run the server and test allowed operations work (with valid API key)
+4. **Security**: Verify blocked operations return 403 (even with valid API key)
+5. **Confirmation modes**:
    - Default mode (no args): Modify operations prompt for confirmation, read operations proceed immediately
    - `--confirm-all`: All operations prompt for confirmation
    - `--confirm-modify`: Same as default
    - `--no-confirm`: No operations prompt for confirmation
    - Blocked operations are always blocked, never prompt for confirmation
-4. **Tests**: `uv run pytest` passes
-5. **Linting**: `uv run ruff check .` passes
-6. **Docs**: README accurately reflects implementation including confirmation feature
+6. **Tests**: `uv run pytest` passes
+7. **Linting**: `uv run ruff check .` passes
+8. **Docs**: README accurately reflects implementation including authentication and confirmation features
