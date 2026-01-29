@@ -1,0 +1,9 @@
+{
+  "token": "ya29.a0AfH6SMBxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "refresh_token": "1//0eXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "client_id": "123456789012-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com",
+  "client_secret": "GOCSPX-xxxxxxxxxxxxxxxxxxxxxxxx",
+  "scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+  "expiry": "2025-01-20T12:00:00.000000Z"
+}
