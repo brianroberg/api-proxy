@@ -111,6 +111,23 @@ class GmailClient:
             await self._http_client.aclose()
             self._http_client = None
 
+    def _force_refresh_credentials(self) -> Credentials | None:
+        """Force a token refresh, regardless of expiry status."""
+        if self._credentials is None:
+            self._credentials = self._load_credentials()
+
+        if self._credentials is None or not self._credentials.refresh_token:
+            return None
+
+        try:
+            self._credentials.refresh(Request())
+            self._save_credentials(self._credentials)
+            logger.info("Force-refreshed credentials after 401")
+            return self._credentials
+        except Exception as e:
+            logger.error(f"Failed to force-refresh credentials: {e}")
+            return None
+
     async def request(
         self,
         method: str,
@@ -139,12 +156,6 @@ class GmailClient:
 
         config = get_config()
         url = f"{config.gmail_api_base_url}{path}"
-
-        headers = {
-            "Authorization": f"Bearer {creds.token}",
-            "Content-Type": "application/json",
-        }
-
         client = await self.get_http_client()
 
         logger.debug(f"Gmail API request: {method} {path}")
@@ -152,12 +163,32 @@ class GmailClient:
         response = await client.request(
             method=method,
             url=url,
-            headers=headers,
+            headers={
+                "Authorization": f"Bearer {creds.token}",
+                "Content-Type": "application/json",
+            },
             params=params,
             json=json_body,
         )
 
         logger.debug(f"Gmail API response: {response.status_code}")
+
+        # If we get a 401, try refreshing the token and retrying once
+        if response.status_code == 401:
+            logger.info("Got 401 from Gmail API, attempting token refresh")
+            creds = self._force_refresh_credentials()
+            if creds is not None:
+                response = await client.request(
+                    method=method,
+                    url=url,
+                    headers={
+                        "Authorization": f"Bearer {creds.token}",
+                        "Content-Type": "application/json",
+                    },
+                    params=params,
+                    json=json_body,
+                )
+                logger.debug(f"Gmail API retry response: {response.status_code}")
 
         return response
 

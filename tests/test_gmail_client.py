@@ -79,6 +79,101 @@ class TestTokenRefresh:
             # Should have called refresh
             mock_creds.refresh.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_retries_on_401_with_refreshed_token(self, temp_dir):
+        """Should retry request with refreshed token when Gmail returns 401."""
+        token_file = temp_dir / "token.json"
+        token_data = {
+            "token": "stale_token",
+            "refresh_token": "test_refresh",
+            "client_id": "test_client_id",
+            "client_secret": "test_client_secret",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        config = Config(
+            token_file=token_file,
+            api_keys_file=temp_dir / "keys.json",
+            confirmation_mode=ConfirmationMode.NONE,
+        )
+        set_config(config)
+
+        client = GmailClient(token_file)
+
+        # Set up credentials that appear valid but will be rejected
+        mock_creds = MagicMock()
+        mock_creds.expired = False
+        mock_creds.refresh_token = "test_refresh"
+        mock_creds.token = "stale_token"
+
+        with patch.object(client, "_get_credentials", return_value=mock_creds):
+            http_client = await client.get_http_client()
+
+            # First response is 401, second is 200 (after refresh)
+            mock_401_response = MagicMock()
+            mock_401_response.status_code = 401
+
+            mock_200_response = MagicMock()
+            mock_200_response.status_code = 200
+
+            with patch.object(http_client, "request") as mock_request:
+                mock_request.side_effect = [mock_401_response, mock_200_response]
+
+                with patch.object(client, "_force_refresh_credentials") as mock_refresh:
+                    refreshed_creds = MagicMock()
+                    refreshed_creds.token = "fresh_token"
+                    mock_refresh.return_value = refreshed_creds
+
+                    response = await client.request("GET", "/gmail/v1/users/me/labels")
+
+                    # Should have retried after 401
+                    assert mock_request.call_count == 2
+                    mock_refresh.assert_called_once()
+                    assert response.status_code == 200
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_returns_401_when_refresh_fails(self, temp_dir):
+        """Should return 401 when token refresh fails."""
+        token_file = temp_dir / "token.json"
+        token_data = {
+            "token": "stale_token",
+            "refresh_token": "test_refresh",
+            "client_id": "test_client_id",
+            "client_secret": "test_client_secret",
+        }
+        token_file.write_text(json.dumps(token_data))
+
+        config = Config(
+            token_file=token_file,
+            api_keys_file=temp_dir / "keys.json",
+            confirmation_mode=ConfirmationMode.NONE,
+        )
+        set_config(config)
+
+        client = GmailClient(token_file)
+
+        mock_creds = MagicMock()
+        mock_creds.expired = False
+        mock_creds.refresh_token = "test_refresh"
+        mock_creds.token = "stale_token"
+
+        with patch.object(client, "_get_credentials", return_value=mock_creds):
+            http_client = await client.get_http_client()
+
+            mock_401_response = MagicMock()
+            mock_401_response.status_code = 401
+
+            with patch.object(http_client, "request", return_value=mock_401_response):
+                with patch.object(client, "_force_refresh_credentials", return_value=None):
+                    response = await client.request("GET", "/gmail/v1/users/me/labels")
+
+                    # Should return the 401 when refresh fails
+                    assert response.status_code == 401
+
+        await client.close()
+
 
 class TestApiCallConstruction:
     """Tests for API call construction."""
