@@ -9,11 +9,36 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
-def extract_endpoints_from_code() -> set[tuple[str, str]]:
-    """Extract endpoint patterns from the handler code."""
-    handlers_file = PROJECT_ROOT / "src" / "api_proxy" / "gmail" / "handlers.py"
-    content = handlers_file.read_text()
+def discover_handler_modules() -> list[tuple[Path, str]]:
+    """
+    Discover all handler modules in api_proxy and extract their router prefixes.
+    Returns list of (handlers_file, prefix) tuples.
+    """
+    api_proxy_dir = PROJECT_ROOT / "src" / "api_proxy"
+    handler_configs = []
 
+    # Match router prefix definition: prefix="/gmail/v1/users" or prefix='/calendar/v3'
+    prefix_pattern = re.compile(r'prefix\s*=\s*["\']([^"\']+)["\']')
+
+    # Scan all subdirectories for handlers.py files
+    for subdir in api_proxy_dir.iterdir():
+        if not subdir.is_dir():
+            continue
+        handlers_file = subdir / "handlers.py"
+        if not handlers_file.exists():
+            continue
+
+        content = handlers_file.read_text()
+        prefix_match = prefix_pattern.search(content)
+        if prefix_match:
+            prefix = prefix_match.group(1)
+            handler_configs.append((handlers_file, prefix))
+
+    return handler_configs
+
+
+def extract_endpoints_from_code() -> set[tuple[str, str]]:
+    """Extract endpoint patterns from all handler files."""
     endpoints = set()
 
     # Match FastAPI route decorators
@@ -23,12 +48,17 @@ def extract_endpoints_from_code() -> set[tuple[str, str]]:
         re.IGNORECASE,
     )
 
-    for match in route_pattern.finditer(content):
-        method = match.group(1).upper()
-        path = match.group(2)
-        # Normalize path by adding /gmail/v1/users prefix
-        full_path = f"/gmail/v1/users{path}"
-        endpoints.add((method, full_path))
+    # Dynamically discover all handler modules
+    handler_configs = discover_handler_modules()
+
+    for handlers_file, prefix in handler_configs:
+        content = handlers_file.read_text()
+
+        for match in route_pattern.finditer(content):
+            method = match.group(1).upper()
+            path = match.group(2)
+            full_path = f"{prefix}{path}"
+            endpoints.add((method, full_path))
 
     return endpoints
 
@@ -42,19 +72,22 @@ def extract_endpoints_from_readme() -> set[tuple[str, str]]:
     content = readme_file.read_text()
     endpoints = set()
 
-    # Match endpoint patterns in README
-    # Pattern: `GET /gmail/v1/users/{userId}/messages` or similar
+    # Match endpoint patterns in README for both Gmail and Calendar
+    # Pattern: `GET /gmail/v1/users/{userId}/messages` or `GET /calendar/v3/calendars/{calendarId}/events`
     endpoint_pattern = re.compile(
-        r"`(GET|POST|PUT|DELETE|PATCH)\s+(/gmail/v1/users/[^`]+)`",
+        r"`(GET|POST|PUT|DELETE|PATCH)\s+(/(gmail|calendar)/[^`]+)`",
         re.IGNORECASE,
     )
 
     for match in endpoint_pattern.finditer(content):
         method = match.group(1).upper()
         path = match.group(2)
-        # Normalize path parameters
+        # Normalize path parameters - Gmail
         path = re.sub(r"\{userId\}", "{user_id}", path)
         path = re.sub(r"\{id\}", "{message_id}", path)
+        # Normalize path parameters - Calendar
+        path = re.sub(r"\{calendarId\}", "{calendar_id}", path)
+        path = re.sub(r"\{eventId\}", "{event_id}", path)
         endpoints.add((method, path))
 
     return endpoints
@@ -128,11 +161,13 @@ class TestEndpointDocumentation:
         for method, path in endpoints:
             with subtests.test(endpoint=f"{method} {path}"):
                 # Normalize the path for matching - convert code param names to README style
-                # Code uses: {user_id}, {message_id}, {label_id}
-                # README uses: {userId}, {id}
+                # Gmail: Code uses {user_id}, {message_id}, {label_id} -> README uses {userId}, {id}
+                # Calendar: Code uses {calendar_id}, {event_id} -> README uses {calendarId}, {eventId}
                 readme_path = path.replace("{user_id}", "{userId}")
                 readme_path = readme_path.replace("{message_id}", "{id}")
                 readme_path = readme_path.replace("{label_id}", "{id}")
+                readme_path = readme_path.replace("{calendar_id}", "{calendarId}")
+                readme_path = readme_path.replace("{event_id}", "{eventId}")
 
                 # Check if the endpoint is documented (method + path)
                 search_pattern = f"`{method} {readme_path}`"
