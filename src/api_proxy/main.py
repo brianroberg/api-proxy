@@ -120,9 +120,14 @@ def is_allowed_path(path: str, method: str) -> bool:
     Allowlist approach: if not in allowed list, it's blocked.
     """
     path = path.rstrip("/")
+    path_lower = path.lower()
 
     # Health check is always allowed (handled separately, no auth)
-    if path.lower() == "/health":
+    if path_lower == "/health":
+        return True
+
+    # Documentation endpoints are allowed without auth
+    if path_lower in ("/docs", "/openapi.json", "/redoc"):
         return True
 
     for allowed_method, pattern in ALLOWED_OPERATIONS:
