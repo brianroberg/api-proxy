@@ -223,3 +223,110 @@ def config_no_confirm(api_keys_file, token_file):
     )
     set_config(config)
     return config
+
+
+# =============================================================================
+# CALENDAR API MOCK FIXTURES
+# =============================================================================
+
+
+@pytest.fixture
+def mock_calendar_response():
+    """Factory fixture for creating mock Calendar API responses."""
+
+    def _create_response(status_code: int = 200, json_data: dict | None = None):
+        response = MagicMock(spec=Response)
+        response.status_code = status_code
+        response.json.return_value = json_data or {}
+        return response
+
+    return _create_response
+
+
+@pytest.fixture
+def mock_calendar_list():
+    """Mock response for calendarList.list."""
+    return {
+        "kind": "calendar#calendarList",
+        "items": [
+            {
+                "id": "primary",
+                "summary": "My Calendar",
+                "timeZone": "America/New_York",
+                "accessRole": "owner",
+                "primary": True,
+            },
+            {
+                "id": "work@group.calendar.google.com",
+                "summary": "Work Calendar",
+                "timeZone": "America/New_York",
+                "accessRole": "writer",
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def mock_calendar():
+    """Mock response for calendars.get."""
+    return {
+        "id": "primary",
+        "summary": "My Calendar",
+        "description": "Personal calendar",
+        "timeZone": "America/New_York",
+    }
+
+
+@pytest.fixture
+def mock_events_list():
+    """Mock response for events.list."""
+    return {
+        "kind": "calendar#events",
+        "summary": "My Calendar",
+        "timeZone": "America/New_York",
+        "items": [
+            {
+                "id": "event1",
+                "summary": "Meeting",
+                "start": {"dateTime": "2025-01-20T10:00:00-05:00"},
+                "end": {"dateTime": "2025-01-20T11:00:00-05:00"},
+            },
+            {
+                "id": "event2",
+                "summary": "Lunch",
+                "start": {"date": "2025-01-20"},
+                "end": {"date": "2025-01-20"},
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def mock_event():
+    """Mock response for events.get."""
+    return {
+        "id": "event1",
+        "status": "confirmed",
+        "summary": "Meeting",
+        "description": "Weekly sync",
+        "location": "Conference Room A",
+        "start": {"dateTime": "2025-01-20T10:00:00-05:00", "timeZone": "America/New_York"},
+        "end": {"dateTime": "2025-01-20T11:00:00-05:00", "timeZone": "America/New_York"},
+        "attendees": [
+            {"email": "alice@example.com", "responseStatus": "accepted"},
+            {"email": "bob@example.com", "responseStatus": "needsAction"},
+        ],
+    }
+
+
+@pytest.fixture
+def mock_created_event():
+    """Mock response for events.insert."""
+    return {
+        "id": "newevent123",
+        "status": "confirmed",
+        "summary": "New Meeting",
+        "htmlLink": "https://calendar.google.com/calendar/event?eid=xxx",
+        "start": {"dateTime": "2025-01-21T14:00:00-05:00"},
+        "end": {"dateTime": "2025-01-21T15:00:00-05:00"},
+    }
