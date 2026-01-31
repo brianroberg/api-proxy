@@ -29,8 +29,9 @@ class Config:
     confirmation_mode: ConfirmationMode = ConfirmationMode.MODIFY
     confirmation_timeout: float | None = 300.0  # 5 minutes, None for no timeout
 
-    # Gmail API base URL
+    # API base URLs
     gmail_api_base_url: str = "https://gmail.googleapis.com"
+    calendar_api_base_url: str = "https://www.googleapis.com/calendar/v3"
 
 
 # Global config instance, set during startup

@@ -198,6 +198,18 @@ class TestAuthenticationEnforcement:
         response = client.get("/health")
         assert response.status_code == 200
 
+    def test_docs_endpoints_no_auth_required(self, client):
+        """Documentation endpoints should NOT require authentication."""
+        # /docs returns HTML, /openapi.json returns JSON schema
+        docs_response = client.get("/docs")
+        assert docs_response.status_code == 200
+
+        openapi_response = client.get("/openapi.json")
+        assert openapi_response.status_code == 200
+
+        redoc_response = client.get("/redoc")
+        assert redoc_response.status_code == 200
+
     def test_blocked_returns_403_before_checking_auth(self, client):
         """
         Blocked operations should ideally check auth first (401 before 403).

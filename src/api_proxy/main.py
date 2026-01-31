@@ -12,6 +12,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from api_proxy.calendar.client import close_calendar_client
+from api_proxy.calendar.handlers import router as calendar_router
 from api_proxy.config import Config, ConfirmationMode, set_config
 from api_proxy.gmail.client import close_gmail_client
 from api_proxy.gmail.handlers import router as gmail_router
@@ -75,6 +77,9 @@ BLOCKED_PATHS = [
 
 # Allowed operations with their HTTP methods
 ALLOWED_OPERATIONS = [
+    # ==========================================================================
+    # Gmail operations
+    # ==========================================================================
     # Read operations
     ("GET", "/gmail/v1/users/{user_id}/messages"),
     ("GET", "/gmail/v1/users/{user_id}/messages/{message_id}"),
@@ -84,6 +89,20 @@ ALLOWED_OPERATIONS = [
     ("POST", "/gmail/v1/users/{user_id}/messages/{message_id}/modify"),
     ("POST", "/gmail/v1/users/{user_id}/messages/{message_id}/trash"),
     ("POST", "/gmail/v1/users/{user_id}/messages/{message_id}/untrash"),
+    # ==========================================================================
+    # Calendar operations
+    # ==========================================================================
+    # Calendar list (read-only)
+    ("GET", "/calendar/v3/users/me/calendarList"),
+    ("GET", "/calendar/v3/calendars/{calendar_id}"),
+    # Events - read operations
+    ("GET", "/calendar/v3/calendars/{calendar_id}/events"),
+    ("GET", "/calendar/v3/calendars/{calendar_id}/events/{event_id}"),
+    # Events - create/update/delete operations
+    ("POST", "/calendar/v3/calendars/{calendar_id}/events"),
+    ("PUT", "/calendar/v3/calendars/{calendar_id}/events/{event_id}"),
+    ("PATCH", "/calendar/v3/calendars/{calendar_id}/events/{event_id}"),
+    ("DELETE", "/calendar/v3/calendars/{calendar_id}/events/{event_id}"),
 ]
 
 
@@ -101,9 +120,14 @@ def is_allowed_path(path: str, method: str) -> bool:
     Allowlist approach: if not in allowed list, it's blocked.
     """
     path = path.rstrip("/")
+    path_lower = path.lower()
 
     # Health check is always allowed (handled separately, no auth)
-    if path.lower() == "/health":
+    if path_lower == "/health":
+        return True
+
+    # Documentation endpoints are allowed without auth
+    if path_lower in ("/docs", "/openapi.json", "/redoc"):
         return True
 
     for allowed_method, pattern in ALLOWED_OPERATIONS:
@@ -125,6 +149,7 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("API Proxy shutting down...")
     await close_gmail_client()
+    await close_calendar_client()
 
 
 app = FastAPI(
@@ -235,8 +260,9 @@ async def health_check():
     return HealthResponse()
 
 
-# Include Gmail routes
+# Include API routes
 app.include_router(gmail_router)
+app.include_router(calendar_router)
 
 
 # =============================================================================
