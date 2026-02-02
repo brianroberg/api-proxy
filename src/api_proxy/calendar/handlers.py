@@ -140,6 +140,26 @@ def _should_confirm_invitation(send_updates: str | None) -> bool:
     return send_updates is not None and send_updates in ("all", "externalOnly")
 
 
+def _reject_if_has_attendees(body: EventRequest) -> None:
+    """
+    Reject requests that include attendees.
+    
+    This is a security measure to prevent the agent from sending calendar
+    invitations on behalf of the user. Creating events with attendees could
+    result in invitation emails being sent, which constitutes communication
+    with others.
+    """
+    if body.attendees and len(body.attendees) > 0:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "forbidden",
+                "message": "Creating or updating events with attendees is not allowed. "
+                           "Events with attendees could send invitations on your behalf.",
+            },
+        )
+
+
 # =============================================================================
 # CALENDAR LIST (Read-only)
 # =============================================================================
@@ -307,6 +327,9 @@ async def create_event(
     calendar_id = validate_calendar_id(calendar_id)
     path = f"/calendars/{calendar_id}/events"
 
+    # Block events with attendees (security: prevents sending invitations)
+    _reject_if_has_attendees(body)
+
     # Determine if confirmation is needed
     # - Always confirm if sendUpdates is "all" or "externalOnly" (sending invitations)
     is_modify = _should_confirm_invitation(sendUpdates)
@@ -368,6 +391,9 @@ async def update_event(
     event_id = validate_event_id(event_id)
     path = f"/calendars/{calendar_id}/events/{event_id}"
 
+    # Block events with attendees (security: prevents sending invitations)
+    _reject_if_has_attendees(body)
+
     # Confirm if sending invitations
     is_modify = _should_confirm_invitation(sendUpdates)
 
@@ -421,6 +447,9 @@ async def patch_event(
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
     path = f"/calendars/{calendar_id}/events/{event_id}"
+
+    # Block events with attendees (security: prevents sending invitations)
+    _reject_if_has_attendees(body)
 
     # Confirm if sending invitations
     is_modify = _should_confirm_invitation(sendUpdates)
