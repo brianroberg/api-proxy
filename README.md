@@ -4,7 +4,11 @@ A proxy server that enforces capability restrictions between AI agents and backe
 
 ## Overview
 
-The initial implementation focuses on Gmail, where it allows read operations and label modifications but **blocks all email sending capabilities**. This is necessary because Gmail's OAuth scopes don't provide fine-grained control: the `gmail.modify` scope (required for label changes) also grants send permission. The proxy provides the missing capability boundary.
+The proxy currently supports **Gmail** and **Google Calendar** APIs:
+
+- **Gmail**: Allows read operations and label modifications but **blocks all email sending capabilities**. This is necessary because Gmail's OAuth scopes don't provide fine-grained control: the `gmail.modify` scope (required for label changes) also grants send permission. The proxy provides the missing capability boundary.
+
+- **Calendar**: Allows full event management (create, read, update, delete) with optional human confirmation for operations that send invitations to attendees.
 
 ## Architecture
 
@@ -351,6 +355,169 @@ curl -X POST "http://localhost:8000/gmail/v1/users/me/messages/18d5a1b2c3d4e5f6/
   -H "Authorization: Bearer aproxy_..."
 ```
 
+## Calendar API Reference
+
+### Read Operations
+
+#### List Calendars
+
+`GET /calendar/v3/users/me/calendarList`
+
+List all calendars for the authenticated user.
+
+**Query Parameters:**
+- `maxResults` (int): Maximum number of calendars to return
+- `pageToken` (string): Page token for pagination
+- `showDeleted` (bool): Include deleted calendars
+- `showHidden` (bool): Include hidden calendars
+
+**Example:**
+```bash
+curl -X GET "http://localhost:8000/calendar/v3/users/me/calendarList" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
+#### Get Calendar
+
+`GET /calendar/v3/calendars/{calendarId}`
+
+Get metadata for a specific calendar.
+
+**Example:**
+```bash
+curl -X GET "http://localhost:8000/calendar/v3/calendars/primary" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
+#### List Events
+
+`GET /calendar/v3/calendars/{calendarId}/events`
+
+List events in a calendar.
+
+**Query Parameters:**
+- `maxResults` (int): Maximum number of events to return
+- `pageToken` (string): Page token for pagination
+- `timeMin` (string): Lower bound (RFC3339 timestamp) for event start time
+- `timeMax` (string): Upper bound (RFC3339 timestamp) for event start time
+- `q` (string): Free text search terms
+- `singleEvents` (bool): Expand recurring events into instances
+- `orderBy` (string): Order by `startTime` or `updated`
+- `showDeleted` (bool): Include deleted events
+- `updatedMin` (string): Lower bound for event update time
+- `syncToken` (string): Token for incremental sync
+
+**Example:**
+```bash
+curl -X GET "http://localhost:8000/calendar/v3/calendars/primary/events?timeMin=2025-01-01T00:00:00Z&maxResults=10" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
+#### Get Event
+
+`GET /calendar/v3/calendars/{calendarId}/events/{eventId}`
+
+Get a specific event by ID.
+
+**Query Parameters:**
+- `timeZone` (string): Time zone for the response
+
+**Example:**
+```bash
+curl -X GET "http://localhost:8000/calendar/v3/calendars/primary/events/abc123def456" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
+### Modify Operations
+
+#### Create Event
+
+`POST /calendar/v3/calendars/{calendarId}/events`
+
+Create a new event in a calendar.
+
+**Query Parameters:**
+- `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
+- `conferenceDataVersion` (int): Version of conference data (0 or 1)
+
+**Request Body:**
+```json
+{
+  "summary": "Meeting with team",
+  "description": "Weekly sync",
+  "start": {
+    "dateTime": "2025-01-20T10:00:00-05:00",
+    "timeZone": "America/New_York"
+  },
+  "end": {
+    "dateTime": "2025-01-20T11:00:00-05:00",
+    "timeZone": "America/New_York"
+  },
+  "attendees": [
+    {"email": "colleague@example.com"}
+  ]
+}
+```
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8000/calendar/v3/calendars/primary/events" \
+  -H "Authorization: Bearer aproxy_..." \
+  -H "Content-Type: application/json" \
+  -d '{"summary": "Meeting", "start": {"dateTime": "2025-01-20T10:00:00Z"}, "end": {"dateTime": "2025-01-20T11:00:00Z"}}'
+```
+
+#### Update Event (Full)
+
+`PUT /calendar/v3/calendars/{calendarId}/events/{eventId}`
+
+Replace an event entirely.
+
+**Query Parameters:**
+- `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
+- `conferenceDataVersion` (int): Version of conference data (0 or 1)
+
+**Example:**
+```bash
+curl -X PUT "http://localhost:8000/calendar/v3/calendars/primary/events/abc123" \
+  -H "Authorization: Bearer aproxy_..." \
+  -H "Content-Type: application/json" \
+  -d '{"summary": "Updated Meeting", "start": {"dateTime": "2025-01-20T14:00:00Z"}, "end": {"dateTime": "2025-01-20T15:00:00Z"}}'
+```
+
+#### Update Event (Partial)
+
+`PATCH /calendar/v3/calendars/{calendarId}/events/{eventId}`
+
+Partially update an event.
+
+**Query Parameters:**
+- `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
+- `conferenceDataVersion` (int): Version of conference data (0 or 1)
+
+**Example:**
+```bash
+curl -X PATCH "http://localhost:8000/calendar/v3/calendars/primary/events/abc123" \
+  -H "Authorization: Bearer aproxy_..." \
+  -H "Content-Type: application/json" \
+  -d '{"summary": "Renamed Meeting"}'
+```
+
+#### Delete Event
+
+`DELETE /calendar/v3/calendars/{calendarId}/events/{eventId}`
+
+Delete an event. This operation always requires confirmation.
+
+**Query Parameters:**
+- `sendUpdates` (string): Whether to send cancellation notifications (`all`, `externalOnly`, `none`)
+
+**Example:**
+```bash
+curl -X DELETE "http://localhost:8000/calendar/v3/calendars/primary/events/abc123" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
 ## Security Model
 
 ### Two-Layer Security
@@ -364,6 +531,8 @@ The proxy uses an **allowlist** approach: only explicitly allowed operations are
 
 ### Allowed Operations
 
+**Gmail:**
+
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `GET` | `/gmail/v1/users/{userId}/messages` | List messages |
@@ -373,6 +542,19 @@ The proxy uses an **allowlist** approach: only explicitly allowed operations are
 | `POST` | `/gmail/v1/users/{userId}/messages/{id}/modify` | Modify labels |
 | `POST` | `/gmail/v1/users/{userId}/messages/{id}/trash` | Trash message |
 | `POST` | `/gmail/v1/users/{userId}/messages/{id}/untrash` | Untrash message |
+
+**Calendar:**
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/calendar/v3/users/me/calendarList` | List calendars |
+| `GET` | `/calendar/v3/calendars/{calendarId}` | Get calendar |
+| `GET` | `/calendar/v3/calendars/{calendarId}/events` | List events |
+| `GET` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Get event |
+| `POST` | `/calendar/v3/calendars/{calendarId}/events` | Create event |
+| `PUT` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Update event (full) |
+| `PATCH` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Update event (partial) |
+| `DELETE` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Delete event |
 
 ### Blocked Operations (Critical)
 

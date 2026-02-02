@@ -25,7 +25,11 @@ except ImportError:
 
 # Gmail modify scope - allows reading emails and modifying labels
 # Note: This scope also allows sending, which is why the proxy exists
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+# Calendar events scope - allows reading and writing calendar events
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar.events",
+]
 
 
 def generate_token(credentials_file: Path, output_file: Path) -> None:

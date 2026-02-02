@@ -17,8 +17,13 @@ class ConfirmationRequest:
     method: str
     path: str
     query_params: dict[str, str] | None = None
+    # Gmail-specific fields
     labels_to_add: list[str] | None = None
     labels_to_remove: list[str] | None = None
+    # Calendar-specific fields
+    event_summary: str | None = None
+    event_attendees: list[str] | None = None
+    send_updates: str | None = None  # "all", "externalOnly", "none"
 
 
 class ConfirmationHandler:
@@ -36,11 +41,22 @@ class ConfirmationHandler:
             params_str = "&".join(f"{k}={v}" for k, v in request.query_params.items())
             lines.append(f"  Query: {params_str}")
 
+        # Gmail-specific fields
         if request.labels_to_add:
             lines.append(f"  Add labels: {', '.join(request.labels_to_add)}")
 
         if request.labels_to_remove:
             lines.append(f"  Remove labels: {', '.join(request.labels_to_remove)}")
+
+        # Calendar-specific fields
+        if request.event_summary:
+            lines.append(f"  Event: {request.event_summary}")
+
+        if request.event_attendees:
+            lines.append(f"  Attendees: {', '.join(request.event_attendees)}")
+
+        if request.send_updates:
+            lines.append(f"  Send notifications: {request.send_updates}")
 
         lines.append("Allow this request? [y/N]: ")
 
