@@ -28,6 +28,7 @@ class Config:
     # Confirmation settings
     confirmation_mode: ConfirmationMode = ConfirmationMode.MODIFY
     confirmation_timeout: float | None = 300.0  # 5 minutes, None for no timeout
+    web_confirmation: bool = False  # Use web-based confirmation instead of console
 
     # API base URLs
     gmail_api_base_url: str = "https://gmail.googleapis.com"

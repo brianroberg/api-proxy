@@ -25,10 +25,10 @@ except ImportError:
 
 # Gmail modify scope - allows reading emails and modifying labels
 # Note: This scope also allows sending, which is why the proxy exists
-# Calendar events scope - allows reading and writing calendar events
+# Calendar scope - full access to calendars and events
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar",
 ]
 
 

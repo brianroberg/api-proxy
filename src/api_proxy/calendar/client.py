@@ -13,7 +13,7 @@ from api_proxy.config import get_config
 logger = logging.getLogger(__name__)
 
 # Calendar API scope - events only (not full calendar management)
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
 class CalendarClient:

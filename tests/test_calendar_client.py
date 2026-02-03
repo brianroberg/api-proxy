@@ -253,6 +253,6 @@ class TestErrorHandling:
 class TestScopes:
     """Tests for OAuth scopes."""
 
-    def test_uses_calendar_events_scope(self):
-        """Should use calendar.events scope."""
-        assert SCOPES == ["https://www.googleapis.com/auth/calendar.events"]
+    def test_uses_full_calendar_scope(self):
+        """Should use full calendar scope (required for blocking events with attendees)."""
+        assert SCOPES == ["https://www.googleapis.com/auth/calendar"]
