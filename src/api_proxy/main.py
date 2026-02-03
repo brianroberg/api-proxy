@@ -31,20 +31,20 @@ def configure_logging(log_file: Path | None = None) -> None:
     """Configure logging with optional file output."""
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    
+
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    
+
     if log_file:
         # Ensure parent directory exists
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        
+
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
-        
+
         logger.info(f"Logging to file: {log_file}")
 
 
@@ -149,6 +149,10 @@ def is_allowed_path(path: str, method: str) -> bool:
 
     # Documentation endpoints are allowed without auth
     if path_lower in ("/docs", "/openapi.json", "/redoc"):
+        return True
+
+    # Approval UI endpoints (no auth, assumes localhost deployment)
+    if path_lower.startswith("/approval"):
         return True
 
     for allowed_method, pattern in ALLOWED_OPERATIONS:
@@ -341,6 +345,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--web-confirm",
+        action="store_true",
+        help="Use web-based confirmation UI instead of console prompts",
+    )
+
+    parser.add_argument(
         "--confirmation-timeout",
         type=float,
         default=300.0,
@@ -388,8 +398,25 @@ def main() -> int:
         token_file=args.token_file,
         confirmation_mode=confirmation_mode,
         confirmation_timeout=args.confirmation_timeout if args.confirmation_timeout > 0 else None,
+        web_confirmation=args.web_confirm,
     )
     set_config(config)
+
+    # Setup web-based confirmation if enabled
+    if args.web_confirm:
+        from api_proxy.approval.handlers import router as approval_router
+        from api_proxy.confirmation import set_web_queue
+        from api_proxy.web_confirmation import get_web_queue
+
+        web_queue = get_web_queue()
+        set_web_queue(web_queue)
+        app.include_router(approval_router)
+
+        approval_url = "http://{}:{}/approval/".format(
+            "localhost" if config.host == "0.0.0.0" else config.host,
+            config.port,
+        )
+        logger.info(f"Web-based confirmation enabled at {approval_url}")
 
     logger.info(f"Starting API Proxy on {config.host}:{config.port}")
     logger.info(f"Confirmation mode: {confirmation_mode.value}")

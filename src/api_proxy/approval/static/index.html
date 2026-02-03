@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Proxy - Approval Queue</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        h1 {
+            color: #1a1a2e;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: white;
+            border-radius: 20px;
+            font-size: 14px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #dc3545;
+        }
+
+        .status-dot.connected {
+            background: #28a745;
+        }
+
+        .queue-count {
+            background: #e9ecef;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .empty-state {
+            background: white;
+            border-radius: 12px;
+            padding: 60px 20px;
+            text-align: center;
+            color: #6c757d;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-state p {
+            font-size: 16px;
+        }
+
+        .request-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border-left: 4px solid #6c757d;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .request-card.method-GET { border-left-color: #17a2b8; }
+        .request-card.method-POST { border-left-color: #28a745; }
+        .request-card.method-PUT { border-left-color: #fd7e14; }
+        .request-card.method-PATCH { border-left-color: #e83e8c; }
+        .request-card.method-DELETE { border-left-color: #dc3545; }
+
+        .request-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+
+        .request-method {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .method-GET { background: #d1ecf1; color: #0c5460; }
+        .method-POST { background: #d4edda; color: #155724; }
+        .method-PUT { background: #fff3cd; color: #856404; }
+        .method-PATCH { background: #f8d7da; color: #721c24; }
+        .method-DELETE { background: #f8d7da; color: #721c24; }
+
+        .request-time {
+            color: #6c757d;
+            font-size: 13px;
+        }
+
+        .request-path {
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+            font-size: 14px;
+            color: #495057;
+            word-break: break-all;
+            background: #f8f9fa;
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+        }
+
+        .request-details {
+            background: #f8f9fa;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 16px;
+        }
+
+        .detail-row {
+            display: flex;
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+
+        .detail-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .detail-label {
+            font-weight: 600;
+            color: #495057;
+            min-width: 140px;
+        }
+
+        .detail-value {
+            color: #212529;
+        }
+
+        .detail-value.labels-add {
+            color: #28a745;
+        }
+
+        .detail-value.labels-remove {
+            color: #dc3545;
+        }
+
+        .actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .approve-btn {
+            background: #28a745;
+            color: white;
+        }
+
+        .approve-btn:hover {
+            background: #218838;
+        }
+
+        .approve-btn:active {
+            transform: scale(0.98);
+        }
+
+        .reject-btn {
+            background: #dc3545;
+            color: white;
+        }
+
+        .reject-btn:hover {
+            background: #c82333;
+        }
+
+        .reject-btn:active {
+            transform: scale(0.98);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .keyboard-hint {
+            font-size: 11px;
+            opacity: 0.8;
+            margin-left: 4px;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 500;
+            animation: toastIn 0.3s ease-out;
+            z-index: 1000;
+        }
+
+        .toast.success { background: #28a745; }
+        .toast.error { background: #dc3545; }
+        .toast.info { background: #17a2b8; }
+
+        @keyframes toastIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 600px) {
+            body {
+                padding: 12px;
+            }
+
+            header {
+                flex-direction: column;
+                gap: 12px;
+                align-items: flex-start;
+            }
+
+            .actions {
+                flex-direction: column;
+            }
+
+            .detail-row {
+                flex-direction: column;
+            }
+
+            .detail-label {
+                margin-bottom: 2px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>API Proxy Approval Queue</h1>
+            <div class="status-badge">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+                <span class="queue-count" id="queue-count">0</span>
+            </div>
+        </header>
+
+        <main id="queue-container">
+            <div class="empty-state">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p>No pending requests</p>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // All user-provided data is sanitized via createTextNode/textContent
+        // No raw HTML insertion of untrusted content
+
+        let eventSource = null;
+        let pendingRequests = [];
+        let isConnected = false;
+
+        function formatTimestamp(timestamp) {
+            const date = new Date(timestamp * 1000);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffSec = Math.floor(diffMs / 1000);
+
+            if (diffSec < 60) return diffSec + 's ago';
+            if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ago';
+            return date.toLocaleTimeString();
+        }
+
+        function createTextSpan(text, className) {
+            const span = document.createElement('span');
+            if (className) span.className = className;
+            span.textContent = text;
+            return span;
+        }
+
+        function createDetailRow(label, value, valueClass) {
+            const row = document.createElement('div');
+            row.className = 'detail-row';
+
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'detail-label';
+            labelSpan.textContent = label;
+
+            const valueSpan = document.createElement('span');
+            valueSpan.className = 'detail-value' + (valueClass ? ' ' + valueClass : '');
+            valueSpan.textContent = value;
+
+            row.appendChild(labelSpan);
+            row.appendChild(valueSpan);
+            return row;
+        }
+
+        function createRequestCard(request, index) {
+            const card = document.createElement('div');
+            card.className = 'request-card method-' + request.method;
+            card.dataset.requestId = request.id;
+
+            // Header
+            const header = document.createElement('div');
+            header.className = 'request-header';
+
+            const methodSpan = document.createElement('span');
+            methodSpan.className = 'request-method method-' + request.method;
+            methodSpan.textContent = request.method;
+
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'request-time';
+            timeSpan.textContent = formatTimestamp(request.created_at);
+
+            header.appendChild(methodSpan);
+            header.appendChild(timeSpan);
+            card.appendChild(header);
+
+            // Path
+            const pathDiv = document.createElement('div');
+            pathDiv.className = 'request-path';
+            pathDiv.textContent = request.path;
+            card.appendChild(pathDiv);
+
+            // Details (if any)
+            const hasDetails = (request.query_params && Object.keys(request.query_params).length > 0) ||
+                              (request.labels_to_add && request.labels_to_add.length > 0) ||
+                              (request.labels_to_remove && request.labels_to_remove.length > 0) ||
+                              request.event_summary ||
+                              (request.event_attendees && request.event_attendees.length > 0) ||
+                              request.send_updates;
+
+            if (hasDetails) {
+                const details = document.createElement('div');
+                details.className = 'request-details';
+
+                if (request.query_params && Object.keys(request.query_params).length > 0) {
+                    const params = Object.entries(request.query_params)
+                        .map(function(entry) { return entry[0] + '=' + entry[1]; })
+                        .join('&');
+                    details.appendChild(createDetailRow('Query params', params));
+                }
+
+                if (request.labels_to_add && request.labels_to_add.length > 0) {
+                    details.appendChild(createDetailRow('Add labels', '+' + request.labels_to_add.join(', '), 'labels-add'));
+                }
+
+                if (request.labels_to_remove && request.labels_to_remove.length > 0) {
+                    details.appendChild(createDetailRow('Remove labels', '-' + request.labels_to_remove.join(', '), 'labels-remove'));
+                }
+
+                if (request.event_summary) {
+                    details.appendChild(createDetailRow('Event', request.event_summary));
+                }
+
+                if (request.event_attendees && request.event_attendees.length > 0) {
+                    details.appendChild(createDetailRow('Attendees', request.event_attendees.join(', ')));
+                }
+
+                if (request.send_updates) {
+                    details.appendChild(createDetailRow('Send notifications', request.send_updates));
+                }
+
+                card.appendChild(details);
+            }
+
+            // Action buttons
+            const actions = document.createElement('div');
+            actions.className = 'actions';
+
+            const approveBtn = document.createElement('button');
+            approveBtn.className = 'approve-btn';
+            approveBtn.textContent = 'Approve';
+            if (index === 0) {
+                const hint = document.createElement('span');
+                hint.className = 'keyboard-hint';
+                hint.textContent = '(Y)';
+                approveBtn.appendChild(hint);
+            }
+            approveBtn.onclick = function() { performAction(request.id, 'approve'); };
+
+            const rejectBtn = document.createElement('button');
+            rejectBtn.className = 'reject-btn';
+            rejectBtn.textContent = 'Reject';
+            if (index === 0) {
+                const hint = document.createElement('span');
+                hint.className = 'keyboard-hint';
+                hint.textContent = '(N)';
+                rejectBtn.appendChild(hint);
+            }
+            rejectBtn.onclick = function() { performAction(request.id, 'reject'); };
+
+            actions.appendChild(approveBtn);
+            actions.appendChild(rejectBtn);
+            card.appendChild(actions);
+
+            return card;
+        }
+
+        function showToast(message, type) {
+            type = type || 'info';
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+
+            setTimeout(function() {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(20px)';
+                setTimeout(function() { toast.remove(); }, 300);
+            }, 3000);
+        }
+
+        function performAction(requestId, action) {
+            const card = document.querySelector('[data-request-id="' + requestId + '"]');
+            if (card) {
+                const buttons = card.querySelectorAll('button');
+                buttons.forEach(function(btn) { btn.disabled = true; });
+            }
+
+            fetch('/approval/api/' + requestId + '/' + action, {
+                method: 'POST'
+            })
+            .then(function(response) {
+                if (!response.ok) {
+                    return response.json().then(function(data) {
+                        showToast(data.detail || 'Failed to ' + action, 'error');
+                    });
+                } else {
+                    showToast('Request ' + action + 'd', 'success');
+                }
+            })
+            .catch(function(error) {
+                console.error('Error ' + action + 'ing request:', error);
+                showToast('Network error: ' + error.message, 'error');
+                if (card) {
+                    var buttons = card.querySelectorAll('button');
+                    buttons.forEach(function(btn) { btn.disabled = false; });
+                }
+            });
+        }
+
+        function renderQueue(pending) {
+            pendingRequests = pending;
+            const container = document.getElementById('queue-container');
+            document.getElementById('queue-count').textContent = pending.length;
+
+            // Clear existing content
+            while (container.firstChild) {
+                container.removeChild(container.firstChild);
+            }
+
+            if (pending.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'empty-state';
+
+                const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                svg.setAttribute('fill', 'none');
+                svg.setAttribute('viewBox', '0 0 24 24');
+                svg.setAttribute('stroke', 'currentColor');
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('stroke-linecap', 'round');
+                path.setAttribute('stroke-linejoin', 'round');
+                path.setAttribute('stroke-width', '1.5');
+                path.setAttribute('d', 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z');
+                svg.appendChild(path);
+
+                const p = document.createElement('p');
+                p.textContent = 'No pending requests';
+
+                empty.appendChild(svg);
+                empty.appendChild(p);
+                container.appendChild(empty);
+                return;
+            }
+
+            pending.forEach(function(request, index) {
+                container.appendChild(createRequestCard(request, index));
+            });
+        }
+
+        function updateConnectionStatus(connected) {
+            isConnected = connected;
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+
+            if (connected) {
+                dot.classList.add('connected');
+                text.textContent = 'Connected';
+            } else {
+                dot.classList.remove('connected');
+                text.textContent = 'Reconnecting...';
+            }
+        }
+
+        function connectSSE() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource('/approval/api/events');
+
+            eventSource.onopen = function() {
+                updateConnectionStatus(true);
+            };
+
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    renderQueue(data.pending || []);
+                } catch (error) {
+                    console.error('Failed to parse SSE message:', error);
+                }
+            };
+
+            eventSource.onerror = function() {
+                updateConnectionStatus(false);
+                eventSource.close();
+                // Reconnect after delay
+                setTimeout(connectSSE, 3000);
+            };
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(event) {
+            if (pendingRequests.length === 0) return;
+            if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+
+            const firstRequest = pendingRequests[0];
+            const key = event.key.toLowerCase();
+
+            if (key === 'y') {
+                event.preventDefault();
+                performAction(firstRequest.id, 'approve');
+            } else if (key === 'n') {
+                event.preventDefault();
+                performAction(firstRequest.id, 'reject');
+            }
+        });
+
+        // Start SSE connection
+        connectSSE();
+    </script>
+</body>
+</html>

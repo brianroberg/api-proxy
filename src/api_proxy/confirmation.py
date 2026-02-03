@@ -1,11 +1,17 @@
 """Human-in-the-loop confirmation handling."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import sys
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from api_proxy.config import ConfirmationMode, get_config
+
+if TYPE_CHECKING:
+    from api_proxy.web_confirmation import WebConfirmationQueue
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +35,11 @@ class ConfirmationRequest:
 class ConfirmationHandler:
     """Handles human-in-the-loop confirmation for requests."""
 
-    def __init__(self):
-        # Lock to ensure only one confirmation at a time
+    def __init__(self, web_queue: WebConfirmationQueue | None = None):
+        # Lock to ensure only one confirmation at a time (console mode)
         self._lock = asyncio.Lock()
+        # Optional web queue for web-based confirmation
+        self._web_queue = web_queue
 
     def _format_prompt(self, request: ConfirmationRequest) -> str:
         """Format the confirmation prompt for display."""
@@ -86,8 +94,27 @@ class ConfirmationHandler:
         Request confirmation from the operator.
 
         Returns True if approved, False if rejected or timed out.
-        Only one confirmation can be pending at a time.
+        Only one confirmation can be pending at a time (in console mode).
         """
+        # Web-based confirmation: delegate to queue
+        if self._web_queue is not None:
+            approved = await self._web_queue.add_request(
+                method=request.method,
+                path=request.path,
+                query_params=request.query_params,
+                labels_to_add=request.labels_to_add,
+                labels_to_remove=request.labels_to_remove,
+                event_summary=request.event_summary,
+                event_attendees=request.event_attendees,
+                send_updates=request.send_updates,
+            )
+            if approved:
+                logger.info(f"Request APPROVED: {request.method} {request.path}")
+            else:
+                logger.info(f"Request REJECTED: {request.method} {request.path}")
+            return approved
+
+        # Console-based confirmation: use stdin
         config = get_config()
         prompt = self._format_prompt(request)
 
@@ -114,14 +141,34 @@ class ConfirmationHandler:
 
 # Global handler instance
 _handler: ConfirmationHandler | None = None
+_web_queue: WebConfirmationQueue | None = None
 
 
 def get_confirmation_handler() -> ConfirmationHandler:
     """Get the global confirmation handler instance."""
     global _handler
     if _handler is None:
-        _handler = ConfirmationHandler()
+        _handler = ConfirmationHandler(web_queue=_web_queue)
     return _handler
+
+
+def set_web_queue(queue: WebConfirmationQueue) -> None:
+    """
+    Set the web confirmation queue for web-based confirmation mode.
+
+    Must be called before any requests are processed.
+    """
+    global _web_queue, _handler
+    _web_queue = queue
+    # Reset handler so it's recreated with the new queue
+    _handler = None
+
+
+def reset_confirmation_handler() -> None:
+    """Reset the global handler (for testing)."""
+    global _handler, _web_queue
+    _handler = None
+    _web_queue = None
 
 
 def requires_confirmation(method: str, is_modify_operation: bool) -> bool:

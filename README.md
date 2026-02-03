@@ -611,6 +611,135 @@ Allow this request? [y/N]:
 - Confirmation prompts are synchronous—only one pending at a time
 - Default timeout is 5 minutes (configurable via `--confirmation-timeout`)
 
+### Web-Based Confirmation
+
+For containerized deployments where console stdin is unavailable, the proxy supports a web-based approval UI.
+
+```bash
+uv run api-proxy --web-confirm --confirm-modify
+```
+
+This starts a web UI at `http://localhost:8000/approval/` where operators can view pending requests and approve or reject them.
+
+**Features:**
+- Real-time updates via Server-Sent Events (SSE)
+- FIFO queue of pending requests
+- Keyboard shortcuts (`Y` to approve, `N` to reject first item)
+- Full request details (method, path, labels, event info)
+
+**Architecture:**
+```
+AI Agent → HTTP Request
+    │
+    ▼
+[Confirmation Required?]
+    │
+    YES → Request added to queue
+    │     │
+    │     ▼
+    │     Web UI shows pending request
+    │     │
+    │     ▼
+    │     Operator clicks Approve/Reject
+    │     │
+    │     ▼
+    │     Original request continues (or 403)
+    │
+    NO → Forward immediately
+```
+
+**Note:** The approval UI has no authentication and assumes localhost-only deployment. Do not expose the approval endpoints to untrusted networks.
+
+## Approval UI API Reference
+
+These internal endpoints power the web-based approval UI. They require no authentication (localhost assumption).
+
+### List Pending Requests
+
+`GET /approval/api/queue`
+
+Get the current queue of pending confirmation requests.
+
+**Response:**
+```json
+{
+  "pending": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "method": "POST",
+      "path": "/gmail/v1/users/me/messages/abc123/modify",
+      "query_params": null,
+      "labels_to_add": ["STARRED"],
+      "labels_to_remove": ["UNREAD"],
+      "event_summary": null,
+      "event_attendees": null,
+      "send_updates": null,
+      "created_at": 1705678901.123
+    }
+  ]
+}
+```
+
+### Approve Request
+
+`POST /approval/api/{request_id}/approve`
+
+Approve a pending request, allowing it to proceed to the backend.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Request approved"
+}
+```
+
+**Errors:**
+- `404` - Request not found or already processed
+
+### Reject Request
+
+`POST /approval/api/{request_id}/reject`
+
+Reject a pending request, returning 403 to the original caller.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Request rejected"
+}
+```
+
+**Errors:**
+- `404` - Request not found or already processed
+
+### Event Stream (SSE)
+
+`GET /approval/api/events`
+
+Server-Sent Events stream for real-time queue updates.
+
+**Event Types:**
+- `connected` - Initial connection with current queue state
+- `request_added` - New request added to queue
+- `request_approved` - Request was approved
+- `request_rejected` - Request was rejected
+- `request_timeout` - Request timed out
+
+**Example:**
+```bash
+curl -N http://localhost:8000/approval/api/events
+# data: {"event": "connected", "pending": [...]}
+# data: {"event": "request_added", "pending": [...]}
+```
+
+### Approval UI Page
+
+`GET /approval/`
+
+Serves the approval web interface (HTML page).
+
 ## Configuration
 
 ### Command-Line Options
@@ -628,8 +757,10 @@ uv run api-proxy [OPTIONS]
 | `--confirm-all` | - | Require confirmation for all requests |
 | `--confirm-modify` | (default) | Require confirmation for modify operations |
 | `--no-confirm` | - | Disable confirmation |
+| `--web-confirm` | - | Use web-based confirmation UI instead of console |
 | `--confirmation-timeout` | `300` | Timeout for confirmation prompts (seconds) |
 | `--reload` | - | Enable auto-reload for development |
+| `--log-file` | - | Write logs to file (in addition to console) |
 
 ### Environment Variables
 
