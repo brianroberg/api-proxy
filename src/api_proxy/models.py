@@ -7,6 +7,7 @@ class HealthResponse(BaseModel):
     """Health check response."""
 
     status: str = "ok"
+    version: str = "0.1.1"
 
 
 class ErrorResponse(BaseModel):

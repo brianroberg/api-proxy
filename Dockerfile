@@ -8,11 +8,14 @@ RUN pip install --no-cache-dir uv
 # Copy dependency files first (for layer caching)
 COPY pyproject.toml uv.lock README.md ./
 
-# Install dependencies (no dev deps for production)
-RUN uv sync --frozen --no-dev
+# Install dependencies only (without installing the project itself)
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy source code
 COPY src/ ./src/
+
+# Now install the project with source code present
+RUN uv sync --frozen --no-dev
 
 # Create directories for credentials and logs (mounted at runtime)
 RUN mkdir -p /app/credentials /app/logs
