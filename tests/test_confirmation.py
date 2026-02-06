@@ -40,6 +40,22 @@ class TestConfirmationModes:
         """With --no-confirm, modify operations don't require confirmation."""
         assert requires_confirmation("POST", is_modify_operation=True) is False
 
+    def test_confirm_modify_skips_label_operations(self, config_confirm_modify):
+        """With --confirm-modify, label operations don't require confirmation."""
+        assert requires_confirmation("POST", is_modify_operation=True, operation_type="label") is False
+
+    def test_confirm_modify_still_requires_trash_operations(self, config_confirm_modify):
+        """With --confirm-modify, trash operations still require confirmation."""
+        assert requires_confirmation("POST", is_modify_operation=True, operation_type="trash") is True
+
+    def test_confirm_modify_still_requires_untrash_operations(self, config_confirm_modify):
+        """With --confirm-modify, untrash operations still require confirmation."""
+        assert requires_confirmation("POST", is_modify_operation=True, operation_type="untrash") is True
+
+    def test_confirm_all_still_requires_label_operations(self, config_confirm_all):
+        """With --confirm-all, even label operations require confirmation."""
+        assert requires_confirmation("POST", is_modify_operation=True, operation_type="label") is True
+
 
 class TestConfirmationPrompt:
     """Test confirmation prompt handling."""

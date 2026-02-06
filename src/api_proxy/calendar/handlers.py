@@ -108,6 +108,8 @@ async def handle_confirmation(
     event_summary: str | None = None,
     event_attendees: list[str] | None = None,
     send_updates: str | None = None,
+    event_start: str | None = None,
+    event_end: str | None = None,
 ) -> None:
     """
     Handle confirmation if required. Raises HTTPException if rejected.
@@ -123,6 +125,8 @@ async def handle_confirmation(
         event_summary=event_summary,
         event_attendees=event_attendees,
         send_updates=send_updates,
+        event_start=event_start,
+        event_end=event_end,
     )
 
     approved = await handler.confirm(confirmation_request)
@@ -143,7 +147,7 @@ def _should_confirm_invitation(send_updates: str | None) -> bool:
 def _reject_if_has_attendees(body: EventRequest) -> None:
     """
     Reject requests that include attendees.
-    
+
     This is a security measure to prevent the agent from sending calendar
     invitations on behalf of the user. Creating events with attendees could
     result in invitation emails being sent, which constitutes communication
@@ -158,6 +162,22 @@ def _reject_if_has_attendees(body: EventRequest) -> None:
                            "Events with attendees could send invitations on your behalf.",
             },
         )
+
+
+def _format_event_datetime(dt) -> str | None:
+    """
+    Format EventDateTime for display in confirmation prompt.
+
+    Returns the dateTime (for timed events) or date (for all-day events).
+    """
+    if dt is None:
+        return None
+    # Handle both EventDateTime model and dict (from API response)
+    if hasattr(dt, "dateTime"):
+        return dt.dateTime or dt.date
+    elif isinstance(dt, dict):
+        return dt.get("dateTime") or dt.get("date")
+    return None
 
 
 # =============================================================================
@@ -347,6 +367,8 @@ async def create_event(
         event_summary=body.summary,
         event_attendees=attendee_emails,
         send_updates=sendUpdates if _should_confirm_invitation(sendUpdates) else None,
+        event_start=_format_event_datetime(body.start),
+        event_end=_format_event_datetime(body.end),
     )
 
     params = {}
@@ -409,6 +431,8 @@ async def update_event(
         event_summary=body.summary,
         event_attendees=attendee_emails,
         send_updates=sendUpdates if _should_confirm_invitation(sendUpdates) else None,
+        event_start=_format_event_datetime(body.start),
+        event_end=_format_event_datetime(body.end),
     )
 
     params = {}
@@ -466,6 +490,8 @@ async def patch_event(
         event_summary=body.summary,
         event_attendees=attendee_emails,
         send_updates=sendUpdates if _should_confirm_invitation(sendUpdates) else None,
+        event_start=_format_event_datetime(body.start),
+        event_end=_format_event_datetime(body.end),
     )
 
     params = {}
@@ -508,21 +534,47 @@ async def delete_event(
     event_id = validate_event_id(event_id)
     path = f"/calendars/{calendar_id}/events/{event_id}"
 
+    # Fetch event to get summary and dates for confirmation display
+    client = get_calendar_client()
+    event_summary = f"Event ID: {event_id}"
+    event_start = None
+    event_end = None
+
+    try:
+        response = await client.request("GET", path)
+        if response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "backend_error", "message": "Event not found"},
+            )
+        elif response.status_code == 200:
+            event_data = response.json()
+            event_summary = event_data.get("summary", event_summary)
+            event_start = _format_event_datetime(event_data.get("start"))
+            event_end = _format_event_datetime(event_data.get("end"))
+        else:
+            logger.warning(f"Failed to fetch event metadata: {response.status_code}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to fetch event for delete confirmation: {e}")
+
     # DELETE always requires confirmation (is_modify=True)
     await handle_confirmation(
         request,
         "DELETE",
         path,
         is_modify=True,
-        event_summary=f"Event ID: {event_id}",
+        event_summary=event_summary,
         send_updates=sendUpdates,
+        event_start=event_start,
+        event_end=event_end,
     )
 
     params = {}
     if sendUpdates is not None:
         params["sendUpdates"] = sendUpdates
 
-    client = get_calendar_client()
     try:
         response = await client.request("DELETE", path, params=params or None)
         return await forward_response(response)

@@ -26,10 +26,16 @@ class ConfirmationRequest:
     # Gmail-specific fields
     labels_to_add: list[str] | None = None
     labels_to_remove: list[str] | None = None
+    message_sender: str | None = None  # Email sender for trash/untrash
+    message_subject: str | None = None  # Email subject for trash/untrash
     # Calendar-specific fields
     event_summary: str | None = None
     event_attendees: list[str] | None = None
     send_updates: str | None = None  # "all", "externalOnly", "none"
+    event_start: str | None = None  # Event start date/time
+    event_end: str | None = None  # Event end date/time
+    # Operation classification
+    operation_type: str | None = None  # "label", "trash", "untrash", etc.
 
 
 class ConfirmationHandler:
@@ -50,6 +56,12 @@ class ConfirmationHandler:
             lines.append(f"  Query: {params_str}")
 
         # Gmail-specific fields
+        if request.message_sender:
+            lines.append(f"  From: {request.message_sender}")
+
+        if request.message_subject:
+            lines.append(f"  Subject: {request.message_subject}")
+
         if request.labels_to_add:
             lines.append(f"  Add labels: {', '.join(request.labels_to_add)}")
 
@@ -59,6 +71,12 @@ class ConfirmationHandler:
         # Calendar-specific fields
         if request.event_summary:
             lines.append(f"  Event: {request.event_summary}")
+
+        if request.event_start:
+            lines.append(f"  Start: {request.event_start}")
+
+        if request.event_end:
+            lines.append(f"  End: {request.event_end}")
 
         if request.event_attendees:
             lines.append(f"  Attendees: {', '.join(request.event_attendees)}")
@@ -104,9 +122,13 @@ class ConfirmationHandler:
                 query_params=request.query_params,
                 labels_to_add=request.labels_to_add,
                 labels_to_remove=request.labels_to_remove,
+                message_sender=request.message_sender,
+                message_subject=request.message_subject,
                 event_summary=request.event_summary,
                 event_attendees=request.event_attendees,
                 send_updates=request.send_updates,
+                event_start=request.event_start,
+                event_end=request.event_end,
             )
             if approved:
                 logger.info(f"Request APPROVED: {request.method} {request.path}")
@@ -171,13 +193,19 @@ def reset_confirmation_handler() -> None:
     _web_queue = None
 
 
-def requires_confirmation(method: str, is_modify_operation: bool) -> bool:
+def requires_confirmation(
+    method: str,
+    is_modify_operation: bool,
+    operation_type: str | None = None,
+) -> bool:
     """
     Determine if a request requires confirmation based on the current mode.
 
     Args:
         method: HTTP method (GET, POST, etc.)
-        is_modify_operation: True if this is a modify operation (label changes, trash, etc.)
+        is_modify_operation: True if this is a modify operation (trash, etc.)
+        operation_type: Type of operation ("label", "trash", "untrash", etc.)
+            Label operations skip confirmation in MODIFY mode.
 
     Returns:
         True if confirmation is required, False otherwise.
@@ -190,6 +218,9 @@ def requires_confirmation(method: str, is_modify_operation: bool) -> bool:
     elif mode == ConfirmationMode.ALL:
         return True
     elif mode == ConfirmationMode.MODIFY:
+        # Label-only operations don't require confirmation
+        if operation_type == "label":
+            return False
         return is_modify_operation
     else:
         return False

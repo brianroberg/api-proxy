@@ -102,11 +102,14 @@ async def handle_confirmation(
     is_modify: bool,
     labels_to_add: list[str] | None = None,
     labels_to_remove: list[str] | None = None,
+    message_sender: str | None = None,
+    message_subject: str | None = None,
+    operation_type: str | None = None,
 ) -> None:
     """
     Handle confirmation if required. Raises HTTPException if rejected.
     """
-    if not requires_confirmation(method, is_modify):
+    if not requires_confirmation(method, is_modify, operation_type):
         return
 
     handler = get_confirmation_handler()
@@ -116,6 +119,9 @@ async def handle_confirmation(
         query_params=dict(request.query_params) if request.query_params else None,
         labels_to_add=labels_to_add,
         labels_to_remove=labels_to_remove,
+        message_sender=message_sender,
+        message_subject=message_subject,
+        operation_type=operation_type,
     )
 
     approved = await handler.confirm(confirmation_request)
@@ -126,6 +132,57 @@ async def handle_confirmation(
             status_code=403,
             detail={"error": "forbidden", "message": "Request rejected by operator"},
         )
+
+
+async def _fetch_message_metadata(
+    user_id: str, message_id: str
+) -> tuple[str | None, str | None]:
+    """
+    Fetch message metadata (sender, subject) for confirmation display.
+
+    Returns:
+        Tuple of (sender, subject). Returns (None, None) on non-fatal errors.
+
+    Raises:
+        HTTPException: If the message does not exist (404).
+    """
+    client = get_gmail_client()
+    try:
+        path = f"/gmail/v1/users/{user_id}/messages/{message_id}"
+        response = await client.request(
+            "GET",
+            path,
+            params={"format": "metadata", "metadataHeaders": ["From", "Subject"]},
+        )
+
+        if response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "backend_error", "message": "Message not found"},
+            )
+
+        if response.status_code != 200:
+            logger.warning(f"Failed to fetch message metadata: {response.status_code}")
+            return None, None
+
+        data = response.json()
+        headers = data.get("payload", {}).get("headers", [])
+
+        sender = None
+        subject = None
+        for header in headers:
+            name = header.get("name", "")
+            if name == "From":
+                sender = header.get("value")
+            elif name == "Subject":
+                subject = header.get("value")
+
+        return sender, subject
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Exception fetching message metadata: {e}")
+        return None, None
 
 
 # =============================================================================
@@ -264,6 +321,7 @@ async def modify_message(
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/modify"
 
+    # Label operations don't require confirmation (operation_type="label")
     await handle_confirmation(
         request,
         "POST",
@@ -271,6 +329,7 @@ async def modify_message(
         is_modify=True,
         labels_to_add=body.addLabelIds,
         labels_to_remove=body.removeLabelIds,
+        operation_type="label",
     )
 
     client = get_gmail_client()
@@ -296,7 +355,18 @@ async def trash_message(request: Request, user_id: str, message_id: str):
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/trash"
 
-    await handle_confirmation(request, "POST", path, is_modify=True)
+    # Fetch message metadata for confirmation display
+    sender, subject = await _fetch_message_metadata(user_id, message_id)
+
+    await handle_confirmation(
+        request,
+        "POST",
+        path,
+        is_modify=True,
+        message_sender=sender,
+        message_subject=subject,
+        operation_type="trash",
+    )
 
     client = get_gmail_client()
     try:
@@ -317,7 +387,18 @@ async def untrash_message(request: Request, user_id: str, message_id: str):
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/untrash"
 
-    await handle_confirmation(request, "POST", path, is_modify=True)
+    # Fetch message metadata for confirmation display
+    sender, subject = await _fetch_message_metadata(user_id, message_id)
+
+    await handle_confirmation(
+        request,
+        "POST",
+        path,
+        is_modify=True,
+        message_sender=sender,
+        message_subject=subject,
+        operation_type="untrash",
+    )
 
     client = get_gmail_client()
     try:

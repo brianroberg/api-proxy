@@ -182,8 +182,18 @@ class TestTrashMessage:
 
     def test_returns_correct_status_code(self, client, auth_headers, httpx_mock, mock_message):
         """Should return 200 on success."""
+        import re
+
+        # Mock the metadata fetch (GET request with query params for message details)
+        httpx_mock.add_response(
+            url=re.compile(r"https://gmail\.googleapis\.com/gmail/v1/users/me/messages/msg1\?.*"),
+            method="GET",
+            json=mock_message,
+        )
+        # Mock the actual trash operation
         httpx_mock.add_response(
             url="https://gmail.googleapis.com/gmail/v1/users/me/messages/msg1/trash",
+            method="POST",
             json=mock_message,
         )
         response = client.post(
@@ -198,8 +208,18 @@ class TestUntrashMessage:
 
     def test_returns_correct_status_code(self, client, auth_headers, httpx_mock, mock_message):
         """Should return 200 on success."""
+        import re
+
+        # Mock the metadata fetch (GET request with query params for message details)
+        httpx_mock.add_response(
+            url=re.compile(r"https://gmail\.googleapis\.com/gmail/v1/users/me/messages/msg1\?.*"),
+            method="GET",
+            json=mock_message,
+        )
+        # Mock the actual untrash operation
         httpx_mock.add_response(
             url="https://gmail.googleapis.com/gmail/v1/users/me/messages/msg1/untrash",
+            method="POST",
             json=mock_message,
         )
         response = client.post(

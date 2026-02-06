@@ -24,9 +24,13 @@ class PendingRequest:
     query_params: dict[str, str] | None
     labels_to_add: list[str] | None
     labels_to_remove: list[str] | None
+    message_sender: str | None
+    message_subject: str | None
     event_summary: str | None
     event_attendees: list[str] | None
     send_updates: str | None
+    event_start: str | None
+    event_end: str | None
     created_at: float
     result_future: asyncio.Future
 
@@ -40,9 +44,13 @@ def _pending_to_dict(pending: PendingRequest) -> dict:
         "query_params": pending.query_params,
         "labels_to_add": pending.labels_to_add,
         "labels_to_remove": pending.labels_to_remove,
+        "message_sender": pending.message_sender,
+        "message_subject": pending.message_subject,
         "event_summary": pending.event_summary,
         "event_attendees": pending.event_attendees,
         "send_updates": pending.send_updates,
+        "event_start": pending.event_start,
+        "event_end": pending.event_end,
         "created_at": pending.created_at,
     }
 
@@ -91,9 +99,13 @@ class WebConfirmationQueue:
         query_params: dict[str, str] | None = None,
         labels_to_add: list[str] | None = None,
         labels_to_remove: list[str] | None = None,
+        message_sender: str | None = None,
+        message_subject: str | None = None,
         event_summary: str | None = None,
         event_attendees: list[str] | None = None,
         send_updates: str | None = None,
+        event_start: str | None = None,
+        event_end: str | None = None,
     ) -> bool:
         """
         Add request to queue and wait for approval.
@@ -114,9 +126,13 @@ class WebConfirmationQueue:
             query_params=query_params,
             labels_to_add=labels_to_add,
             labels_to_remove=labels_to_remove,
+            message_sender=message_sender,
+            message_subject=message_subject,
             event_summary=event_summary,
             event_attendees=event_attendees,
             send_updates=send_updates,
+            event_start=event_start,
+            event_end=event_end,
             created_at=time.time(),
             result_future=future,
         )

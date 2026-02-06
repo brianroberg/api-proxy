@@ -391,7 +391,11 @@
             const hasDetails = (request.query_params && Object.keys(request.query_params).length > 0) ||
                               (request.labels_to_add && request.labels_to_add.length > 0) ||
                               (request.labels_to_remove && request.labels_to_remove.length > 0) ||
+                              request.message_sender ||
+                              request.message_subject ||
                               request.event_summary ||
+                              request.event_start ||
+                              request.event_end ||
                               (request.event_attendees && request.event_attendees.length > 0) ||
                               request.send_updates;
 
@@ -406,6 +410,15 @@
                     details.appendChild(createDetailRow('Query params', params));
                 }
 
+                // Gmail message details
+                if (request.message_sender) {
+                    details.appendChild(createDetailRow('From', request.message_sender));
+                }
+
+                if (request.message_subject) {
+                    details.appendChild(createDetailRow('Subject', request.message_subject));
+                }
+
                 if (request.labels_to_add && request.labels_to_add.length > 0) {
                     details.appendChild(createDetailRow('Add labels', '+' + request.labels_to_add.join(', '), 'labels-add'));
                 }
@@ -414,8 +427,17 @@
                     details.appendChild(createDetailRow('Remove labels', '-' + request.labels_to_remove.join(', '), 'labels-remove'));
                 }
 
+                // Calendar event details
                 if (request.event_summary) {
                     details.appendChild(createDetailRow('Event', request.event_summary));
+                }
+
+                if (request.event_start) {
+                    details.appendChild(createDetailRow('Start', request.event_start));
+                }
+
+                if (request.event_end) {
+                    details.appendChild(createDetailRow('End', request.event_end));
                 }
 
                 if (request.event_attendees && request.event_attendees.length > 0) {
