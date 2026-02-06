@@ -134,6 +134,42 @@ async def handle_confirmation(
         )
 
 
+async def _resolve_label_names(
+    user_id: str, label_ids: list[str]
+) -> list[str]:
+    """
+    Resolve Gmail label IDs to human-readable names.
+
+    System labels (INBOX, UNREAD, etc.) use their name as their ID.
+    Custom labels have opaque IDs like Label_4896464829020374438.
+    This fetches the full label list and maps IDs to names.
+
+    Returns the original IDs for any that can't be resolved.
+    """
+    # Only bother fetching if there are custom label IDs to resolve
+    needs_resolution = any(lid.startswith("Label_") for lid in label_ids)
+    if not needs_resolution:
+        return label_ids
+
+    client = get_gmail_client()
+    try:
+        path = f"/gmail/v1/users/{user_id}/labels"
+        response = await client.request("GET", path)
+        if response.status_code != 200:
+            logger.warning(f"Failed to fetch labels for name resolution: {response.status_code}")
+            return label_ids
+
+        data = response.json()
+        id_to_name = {
+            label["id"]: label["name"]
+            for label in data.get("labels", [])
+        }
+        return [id_to_name.get(lid, lid) for lid in label_ids]
+    except Exception as e:
+        logger.warning(f"Exception resolving label names: {e}")
+        return label_ids
+
+
 async def _fetch_message_metadata(
     user_id: str, message_id: str
 ) -> tuple[str | None, str | None]:
@@ -321,14 +357,34 @@ async def modify_message(
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/modify"
 
-    # Label operations don't require confirmation (operation_type="label")
+    # Only fetch display metadata when confirmation will actually be shown
+    add_names = body.addLabelIds
+    remove_names = body.removeLabelIds
+    sender = None
+    subject = None
+
+    if requires_confirmation("POST", True, "label"):
+        # Resolve label IDs to human-readable names
+        all_ids = (body.addLabelIds or []) + (body.removeLabelIds or [])
+        if all_ids:
+            resolved = await _resolve_label_names(user_id, all_ids)
+            id_to_name = dict(zip(all_ids, resolved))
+            add_names = [id_to_name[lid] for lid in body.addLabelIds] if body.addLabelIds else None
+            remove_names = [id_to_name[lid] for lid in body.removeLabelIds] if body.removeLabelIds else None
+
+        # Fetch message metadata (sender/subject)
+        sender, subject = await _fetch_message_metadata(user_id, message_id)
+
+    # Label operations don't require confirmation in default (MODIFY) mode
     await handle_confirmation(
         request,
         "POST",
         path,
         is_modify=True,
-        labels_to_add=body.addLabelIds,
-        labels_to_remove=body.removeLabelIds,
+        labels_to_add=add_names,
+        labels_to_remove=remove_names,
+        message_sender=sender,
+        message_subject=subject,
         operation_type="label",
     )
 
@@ -355,8 +411,10 @@ async def trash_message(request: Request, user_id: str, message_id: str):
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/trash"
 
-    # Fetch message metadata for confirmation display
-    sender, subject = await _fetch_message_metadata(user_id, message_id)
+    # Fetch message metadata for confirmation display (only when needed)
+    sender, subject = None, None
+    if requires_confirmation("POST", True, "trash"):
+        sender, subject = await _fetch_message_metadata(user_id, message_id)
 
     await handle_confirmation(
         request,
@@ -387,8 +445,10 @@ async def untrash_message(request: Request, user_id: str, message_id: str):
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/untrash"
 
-    # Fetch message metadata for confirmation display
-    sender, subject = await _fetch_message_metadata(user_id, message_id)
+    # Fetch message metadata for confirmation display (only when needed)
+    sender, subject = None, None
+    if requires_confirmation("POST", True, "untrash"):
+        sender, subject = await _fetch_message_metadata(user_id, message_id)
 
     await handle_confirmation(
         request,
