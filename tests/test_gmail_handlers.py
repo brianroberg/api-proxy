@@ -1,11 +1,12 @@
 """Tests for Gmail API handlers."""
 
 
-
 class TestListMessages:
     """Tests for GET /gmail/v1/users/{userId}/messages."""
 
-    def test_returns_correct_status_code(self, client, auth_headers, httpx_mock, mock_messages_list):
+    def test_returns_correct_status_code(
+        self, client, auth_headers, httpx_mock, mock_messages_list
+    ):
         """Should return 200 on success."""
         httpx_mock.add_response(
             url="https://gmail.googleapis.com/gmail/v1/users/me/messages",
@@ -74,6 +75,44 @@ class TestGetMessage:
         data = response.json()
         assert data["id"] == "msg1"
         assert "labelIds" in data
+
+
+class TestGetThread:
+    """Tests for GET /gmail/v1/users/{userId}/threads/{id}."""
+
+    def test_returns_thread(self, client, auth_headers, httpx_mock):
+        httpx_mock.add_response(
+            url="https://gmail.googleapis.com/gmail/v1/users/me/threads/thread123?format=full",
+            json={
+                "id": "thread123",
+                "messages": [
+                    {"id": "msg1", "threadId": "thread123"},
+                    {"id": "msg2", "threadId": "thread123"},
+                ],
+            },
+        )
+        response = client.get(
+            "/gmail/v1/users/me/threads/thread123?format=full",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == "thread123"
+        assert len(data["messages"]) == 2
+
+    def test_validates_thread_id(self, client, auth_headers):
+        response = client.get(
+            "/gmail/v1/users/me/threads/invalid id with spaces",
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+
+    def test_validates_user_id(self, client, auth_headers):
+        response = client.get(
+            "/gmail/v1/users/not valid/threads/thread123",
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
 
 
 class TestListLabels:
@@ -159,9 +198,7 @@ class TestModifyMessage:
         request = httpx_mock.get_request()
         assert request is not None
 
-    def test_returns_gmail_response(
-        self, client, auth_headers, httpx_mock, mock_modify_response
-    ):
+    def test_returns_gmail_response(self, client, auth_headers, httpx_mock, mock_modify_response):
         """Should return Gmail API response correctly."""
         httpx_mock.add_response(
             url="https://gmail.googleapis.com/gmail/v1/users/me/messages/msg1/modify",
