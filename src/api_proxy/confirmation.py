@@ -26,6 +26,10 @@ class ConfirmationRequest:
     # Gmail-specific fields
     labels_to_add: list[str] | None = None
     labels_to_remove: list[str] | None = None
+    # Message context (for human-readable confirmation prompts)
+    message_subject: str | None = None
+    message_from: str | None = None
+    message_snippet: str | None = None
     # Calendar-specific fields
     event_summary: str | None = None
     event_attendees: list[str] | None = None
@@ -48,6 +52,16 @@ class ConfirmationHandler:
         if request.query_params:
             params_str = "&".join(f"{k}={v}" for k, v in request.query_params.items())
             lines.append(f"  Query: {params_str}")
+
+        # Message context
+        if request.message_subject:
+            lines.append(f"  Subject: {request.message_subject}")
+
+        if request.message_from:
+            lines.append(f"  From: {request.message_from}")
+
+        if request.message_snippet:
+            lines.append(f"  Preview: {request.message_snippet}")
 
         # Gmail-specific fields
         if request.labels_to_add:
@@ -104,6 +118,9 @@ class ConfirmationHandler:
                 query_params=request.query_params,
                 labels_to_add=request.labels_to_add,
                 labels_to_remove=request.labels_to_remove,
+                message_subject=request.message_subject,
+                message_from=request.message_from,
+                message_snippet=request.message_snippet,
                 event_summary=request.event_summary,
                 event_attendees=request.event_attendees,
                 send_updates=request.send_updates,

@@ -388,7 +388,8 @@
             card.appendChild(pathDiv);
 
             // Details (if any)
-            const hasDetails = (request.query_params && Object.keys(request.query_params).length > 0) ||
+            const hasDetails = request.message_subject || request.message_from || request.message_snippet ||
+                              (request.query_params && Object.keys(request.query_params).length > 0) ||
                               (request.labels_to_add && request.labels_to_add.length > 0) ||
                               (request.labels_to_remove && request.labels_to_remove.length > 0) ||
                               request.event_summary ||
@@ -398,6 +399,19 @@
             if (hasDetails) {
                 const details = document.createElement('div');
                 details.className = 'request-details';
+
+                // Message context (shown first for quick identification)
+                if (request.message_subject) {
+                    details.appendChild(createDetailRow('Subject', request.message_subject));
+                }
+
+                if (request.message_from) {
+                    details.appendChild(createDetailRow('From', request.message_from));
+                }
+
+                if (request.message_snippet) {
+                    details.appendChild(createDetailRow('Preview', request.message_snippet));
+                }
 
                 if (request.query_params && Object.keys(request.query_params).length > 0) {
                     const params = Object.entries(request.query_params)

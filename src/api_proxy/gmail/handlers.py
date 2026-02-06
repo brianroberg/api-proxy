@@ -95,6 +95,37 @@ async def forward_response(response) -> JSONResponse:
         )
 
 
+async def fetch_message_context(user_id: str, message_id: str) -> dict[str, str | None]:
+    """Fetch message subject, sender, and snippet for confirmation display."""
+    client = get_gmail_client()
+    try:
+        path = f"/gmail/v1/users/{user_id}/messages/{message_id}"
+        response = await client.request(
+            "GET", path, params={"format": "metadata", "metadataHeaders": ["Subject", "From"]},
+        )
+        if response.status_code != 200:
+            return {"subject": None, "from": None, "snippet": None}
+
+        data = response.json()
+        subject = None
+        from_header = None
+        headers = data.get("payload", {}).get("headers", [])
+        for header in headers:
+            name = header.get("name", "").lower()
+            if name == "subject":
+                subject = header.get("value")
+            elif name == "from":
+                from_header = header.get("value")
+        return {
+            "subject": subject,
+            "from": from_header,
+            "snippet": data.get("snippet"),
+        }
+    except Exception as e:
+        logger.warning(f"Failed to fetch message context for confirmation: {e}")
+        return {"subject": None, "from": None, "snippet": None}
+
+
 async def handle_confirmation(
     request: Request,
     method: str,
@@ -102,6 +133,9 @@ async def handle_confirmation(
     is_modify: bool,
     labels_to_add: list[str] | None = None,
     labels_to_remove: list[str] | None = None,
+    message_subject: str | None = None,
+    message_from: str | None = None,
+    message_snippet: str | None = None,
 ) -> None:
     """
     Handle confirmation if required. Raises HTTPException if rejected.
@@ -116,6 +150,9 @@ async def handle_confirmation(
         query_params=dict(request.query_params) if request.query_params else None,
         labels_to_add=labels_to_add,
         labels_to_remove=labels_to_remove,
+        message_subject=message_subject,
+        message_from=message_from,
+        message_snippet=message_snippet,
     )
 
     approved = await handler.confirm(confirmation_request)
@@ -297,14 +334,8 @@ async def modify_message(
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/modify"
 
-    await handle_confirmation(
-        request,
-        "POST",
-        path,
-        is_modify=True,
-        labels_to_add=body.addLabelIds,
-        labels_to_remove=body.removeLabelIds,
-    )
+    # Label modifications are not gated — this is the email-labeler's core operation.
+    # Destructive operations (trash/untrash) still require confirmation.
 
     client = get_gmail_client()
     try:
@@ -329,7 +360,12 @@ async def trash_message(request: Request, user_id: str, message_id: str):
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/trash"
 
-    await handle_confirmation(request, "POST", path, is_modify=True)
+    if requires_confirmation("POST", is_modify_operation=True):
+        ctx = await fetch_message_context(user_id, message_id)
+        await handle_confirmation(
+            request, "POST", path, is_modify=True,
+            message_subject=ctx["subject"], message_from=ctx["from"], message_snippet=ctx["snippet"],
+        )
 
     client = get_gmail_client()
     try:
@@ -350,7 +386,12 @@ async def untrash_message(request: Request, user_id: str, message_id: str):
     message_id = validate_resource_id(message_id, "message")
     path = f"/gmail/v1/users/{user_id}/messages/{message_id}/untrash"
 
-    await handle_confirmation(request, "POST", path, is_modify=True)
+    if requires_confirmation("POST", is_modify_operation=True):
+        ctx = await fetch_message_context(user_id, message_id)
+        await handle_confirmation(
+            request, "POST", path, is_modify=True,
+            message_subject=ctx["subject"], message_from=ctx["from"], message_snippet=ctx["snippet"],
+        )
 
     client = get_gmail_client()
     try:

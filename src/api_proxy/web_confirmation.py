@@ -24,6 +24,9 @@ class PendingRequest:
     query_params: dict[str, str] | None
     labels_to_add: list[str] | None
     labels_to_remove: list[str] | None
+    message_subject: str | None
+    message_from: str | None
+    message_snippet: str | None
     event_summary: str | None
     event_attendees: list[str] | None
     send_updates: str | None
@@ -40,6 +43,9 @@ def _pending_to_dict(pending: PendingRequest) -> dict:
         "query_params": pending.query_params,
         "labels_to_add": pending.labels_to_add,
         "labels_to_remove": pending.labels_to_remove,
+        "message_subject": pending.message_subject,
+        "message_from": pending.message_from,
+        "message_snippet": pending.message_snippet,
         "event_summary": pending.event_summary,
         "event_attendees": pending.event_attendees,
         "send_updates": pending.send_updates,
@@ -91,6 +97,9 @@ class WebConfirmationQueue:
         query_params: dict[str, str] | None = None,
         labels_to_add: list[str] | None = None,
         labels_to_remove: list[str] | None = None,
+        message_subject: str | None = None,
+        message_from: str | None = None,
+        message_snippet: str | None = None,
         event_summary: str | None = None,
         event_attendees: list[str] | None = None,
         send_updates: str | None = None,
@@ -114,6 +123,9 @@ class WebConfirmationQueue:
             query_params=query_params,
             labels_to_add=labels_to_add,
             labels_to_remove=labels_to_remove,
+            message_subject=message_subject,
+            message_from=message_from,
+            message_snippet=message_snippet,
             event_summary=event_summary,
             event_attendees=event_attendees,
             send_updates=send_updates,
