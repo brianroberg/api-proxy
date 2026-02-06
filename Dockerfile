@@ -11,11 +11,12 @@ COPY pyproject.toml uv.lock README.md ./
 # Install dependencies only (without installing the project itself)
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy source code
+# Copy source code BEFORE installing the project
 COPY src/ ./src/
 
-# Now install the project with source code present
-RUN uv sync --frozen --no-dev
+# Install the project (source must be present for correct wheel build)
+RUN uv sync --frozen --no-dev && \
+    uv run python -c "from api_proxy.models import HealthResponse; assert 'version' in HealthResponse.model_fields, 'Build verification failed: old code installed'"
 
 # Create directories for credentials and logs (mounted at runtime)
 RUN mkdir -p /app/credentials /app/logs
