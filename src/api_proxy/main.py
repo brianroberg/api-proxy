@@ -32,9 +32,7 @@ def configure_logging(log_file: Path | None = None) -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
     if log_file:
         # Ensure parent directory exists
@@ -104,6 +102,7 @@ ALLOWED_OPERATIONS = [
     # Read operations
     ("GET", "/gmail/v1/users/{user_id}/messages"),
     ("GET", "/gmail/v1/users/{user_id}/messages/{message_id}"),
+    ("GET", "/gmail/v1/users/{user_id}/threads/{thread_id}"),
     ("GET", "/gmail/v1/users/{user_id}/labels"),
     ("GET", "/gmail/v1/users/{user_id}/labels/{label_id}"),
     # Modify operations
@@ -205,9 +204,7 @@ async def check_blocked_operations(request: Request, call_next):
         logger.warning(f"Blocked operation attempted: {method} {path}")
         return JSONResponse(
             status_code=403,
-            content=ErrorResponse.forbidden_error(
-                "This operation is not allowed"
-            ).model_dump(),
+            content=ErrorResponse.forbidden_error("This operation is not allowed").model_dump(),
         )
 
     # Then check if allowed (allowlist approach)
@@ -215,9 +212,7 @@ async def check_blocked_operations(request: Request, call_next):
         logger.warning(f"Unknown endpoint accessed: {method} {path}")
         return JSONResponse(
             status_code=403,
-            content=ErrorResponse.forbidden_error(
-                "This operation is not allowed"
-            ).model_dump(),
+            content=ErrorResponse.forbidden_error("This operation is not allowed").model_dump(),
         )
 
     return await call_next(request)
@@ -237,9 +232,7 @@ async def log_requests(request: Request, call_next):
     key_name = getattr(request.state, "api_key_name", None)
     key_info = f" (key: {key_name})" if key_name else ""
 
-    logger.info(
-        f"{request.method} {request.url.path} - {response.status_code}{key_info}"
-    )
+    logger.info(f"{request.method} {request.url.path} - {response.status_code}{key_info}")
 
     return response
 
@@ -250,9 +243,7 @@ async def log_requests(request: Request, call_next):
 
 
 @app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(
-    request: Request, exc: StarletteHTTPException
-) -> JSONResponse:
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     """Handle HTTP exceptions with consistent error format."""
     detail = exc.detail
     if isinstance(detail, dict):

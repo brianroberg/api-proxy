@@ -206,6 +206,39 @@ async def get_message(
         ) from e
 
 
+@router.get("/{user_id}/threads/{thread_id}")
+async def get_thread(
+    request: Request,
+    user_id: str,
+    thread_id: str,
+    format: Annotated[str | None, Query()] = None,
+    metadataHeaders: Annotated[list[str] | None, Query()] = None,
+):
+    """Get a specific thread by ID."""
+    user_id = validate_user_id(user_id)
+    thread_id = validate_resource_id(thread_id, "thread")
+    path = f"/gmail/v1/users/{user_id}/threads/{thread_id}"
+
+    await handle_confirmation(request, "GET", path, is_modify=False)
+
+    params = {}
+    if format is not None:
+        params["format"] = format
+    if metadataHeaders is not None:
+        params["metadataHeaders"] = metadataHeaders
+
+    client = get_gmail_client()
+    try:
+        response = await client.request("GET", path, params=params or None)
+        return await forward_response(response)
+    except RuntimeError as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+
 @router.get("/{user_id}/labels")
 async def list_labels(request: Request, user_id: str):
     """List all labels in the user's mailbox."""

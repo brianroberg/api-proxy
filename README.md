@@ -283,6 +283,22 @@ curl -X GET "http://localhost:8000/gmail/v1/users/me/messages/18d5a1b2c3d4e5f6?f
   -H "Authorization: Bearer aproxy_..."
 ```
 
+#### Get Thread
+
+`GET /gmail/v1/users/{userId}/threads/{id}`
+
+Get a specific thread by ID, including all messages in the thread.
+
+**Query Parameters:**
+- `format` (string): `full`, `metadata`, or `minimal`
+- `metadataHeaders` (list): Headers to include when format is `metadata`
+
+**Example:**
+```bash
+curl -X GET "http://localhost:8000/gmail/v1/users/me/threads/18d5a1b2c3d4e5f6?format=full" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
 #### List Labels
 
 `GET /gmail/v1/users/{userId}/labels`
@@ -537,6 +553,7 @@ The proxy uses an **allowlist** approach: only explicitly allowed operations are
 |--------|----------|---------|
 | `GET` | `/gmail/v1/users/{userId}/messages` | List messages |
 | `GET` | `/gmail/v1/users/{userId}/messages/{id}` | Get message |
+| `GET` | `/gmail/v1/users/{userId}/threads/{id}` | Get thread |
 | `GET` | `/gmail/v1/users/{userId}/labels` | List labels |
 | `GET` | `/gmail/v1/users/{userId}/labels/{id}` | Get label |
 | `POST` | `/gmail/v1/users/{userId}/messages/{id}/modify` | Modify labels |

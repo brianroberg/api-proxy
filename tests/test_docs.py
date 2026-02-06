@@ -84,7 +84,13 @@ def extract_endpoints_from_readme() -> set[tuple[str, str]]:
         path = match.group(2)
         # Normalize path parameters - Gmail
         path = re.sub(r"\{userId\}", "{user_id}", path)
-        path = re.sub(r"\{id\}", "{message_id}", path)
+        # Context-aware {id} normalization
+        if "/threads/" in path:
+            path = re.sub(r"\{id\}", "{thread_id}", path)
+        elif "/labels/" in path:
+            path = re.sub(r"\{id\}", "{label_id}", path)
+        else:
+            path = re.sub(r"\{id\}", "{message_id}", path)
         # Normalize path parameters - Calendar
         path = re.sub(r"\{calendarId\}", "{calendar_id}", path)
         path = re.sub(r"\{eventId\}", "{event_id}", path)
@@ -166,6 +172,7 @@ class TestEndpointDocumentation:
                 readme_path = path.replace("{user_id}", "{userId}")
                 readme_path = readme_path.replace("{message_id}", "{id}")
                 readme_path = readme_path.replace("{label_id}", "{id}")
+                readme_path = readme_path.replace("{thread_id}", "{id}")
                 readme_path = readme_path.replace("{calendar_id}", "{calendarId}")
                 readme_path = readme_path.replace("{event_id}", "{eventId}")
 
