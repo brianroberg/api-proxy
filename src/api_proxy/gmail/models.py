@@ -77,3 +77,15 @@ class LabelListResponse(BaseModel):
     """Response from listing labels."""
 
     labels: list[Label] | None = None
+
+
+class DraftMessageBody(BaseModel):
+    """Message body within a draft create/update request."""
+
+    raw: str
+
+
+class DraftRequest(BaseModel):
+    """Request body for creating or updating a draft."""
+
+    message: DraftMessageBody

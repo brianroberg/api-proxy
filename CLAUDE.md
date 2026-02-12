@@ -4,7 +4,7 @@ This file provides context for AI agents working on the api-proxy codebase.
 
 ## Project Overview
 
-api-proxy is a security gateway that sits between AI agents and backend APIs. It enforces capability restrictions that OAuth scopes cannot provide—specifically for Gmail, allowing read and label operations while blocking all email sending.
+api-proxy is a security gateway that sits between AI agents and backend APIs. It enforces capability restrictions that OAuth scopes cannot provide—specifically for Gmail, allowing read, label, and draft CRUD operations while blocking all email sending (including sending drafts).
 
 ## Architecture
 

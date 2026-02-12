@@ -6,7 +6,7 @@ A proxy server that enforces capability restrictions between AI agents and backe
 
 The proxy currently supports **Gmail** and **Google Calendar** APIs:
 
-- **Gmail**: Allows read operations and label modifications but **blocks all email sending capabilities**. This is necessary because Gmail's OAuth scopes don't provide fine-grained control: the `gmail.modify` scope (required for label changes) also grants send permission. The proxy provides the missing capability boundary.
+- **Gmail**: Allows read operations, label modifications, and draft management but **blocks all email sending capabilities**. This is necessary because Gmail's OAuth scopes don't provide fine-grained control: the `gmail.modify` scope (required for label changes) also grants send permission. The proxy provides the missing capability boundary.
 
 - **Calendar**: Allows full event management (create, read, update, delete) with optional human confirmation for operations that send invitations to attendees.
 
@@ -355,6 +355,98 @@ curl -X POST "http://localhost:8000/gmail/v1/users/me/messages/18d5a1b2c3d4e5f6/
   -H "Authorization: Bearer aproxy_..."
 ```
 
+### Draft Operations
+
+#### List Drafts
+
+`GET /gmail/v1/users/{userId}/drafts`
+
+List drafts in the user's mailbox.
+
+**Query Parameters:**
+- `maxResults` (int): Maximum number of drafts to return
+- `pageToken` (string): Page token for pagination
+- `q` (string): Gmail search query
+
+**Example:**
+```bash
+curl "http://localhost:8000/gmail/v1/users/me/drafts?maxResults=10" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
+#### Get Draft
+
+`GET /gmail/v1/users/{userId}/drafts/{id}`
+
+Get a specific draft by ID.
+
+**Query Parameters:**
+- `format` (string): Response format (`full`, `metadata`, `minimal`, `raw`)
+
+**Example:**
+```bash
+curl "http://localhost:8000/gmail/v1/users/me/drafts/r1234567890" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
+#### Create Draft
+
+`POST /gmail/v1/users/{userId}/drafts`
+
+Create a new draft with a base64url-encoded RFC 2822 message.
+
+**Request Body:**
+```json
+{
+  "message": {
+    "raw": "base64url-encoded-RFC-2822-message"
+  }
+}
+```
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8000/gmail/v1/users/me/drafts" \
+  -H "Authorization: Bearer aproxy_..." \
+  -H "Content-Type: application/json" \
+  -d '{"message": {"raw": "dGVzdA=="}}'
+```
+
+#### Update Draft
+
+`PUT /gmail/v1/users/{userId}/drafts/{id}`
+
+Replace an existing draft's message content.
+
+**Request Body:**
+```json
+{
+  "message": {
+    "raw": "base64url-encoded-RFC-2822-message"
+  }
+}
+```
+
+**Example:**
+```bash
+curl -X PUT "http://localhost:8000/gmail/v1/users/me/drafts/r1234567890" \
+  -H "Authorization: Bearer aproxy_..." \
+  -H "Content-Type: application/json" \
+  -d '{"message": {"raw": "dGVzdA=="}}'
+```
+
+#### Delete Draft
+
+`DELETE /gmail/v1/users/{userId}/drafts/{id}`
+
+Permanently delete a draft. Returns `204 No Content` on success.
+
+**Example:**
+```bash
+curl -X DELETE "http://localhost:8000/gmail/v1/users/me/drafts/r1234567890" \
+  -H "Authorization: Bearer aproxy_..."
+```
+
 ## Calendar API Reference
 
 ### Read Operations
@@ -542,6 +634,11 @@ The proxy uses an **allowlist** approach: only explicitly allowed operations are
 | `POST` | `/gmail/v1/users/{userId}/messages/{id}/modify` | Modify labels |
 | `POST` | `/gmail/v1/users/{userId}/messages/{id}/trash` | Trash message |
 | `POST` | `/gmail/v1/users/{userId}/messages/{id}/untrash` | Untrash message |
+| `GET` | `/gmail/v1/users/{userId}/drafts` | List drafts |
+| `GET` | `/gmail/v1/users/{userId}/drafts/{id}` | Get draft |
+| `POST` | `/gmail/v1/users/{userId}/drafts` | Create draft |
+| `PUT` | `/gmail/v1/users/{userId}/drafts/{id}` | Update draft |
+| `DELETE` | `/gmail/v1/users/{userId}/drafts/{id}` | Delete draft |
 
 **Calendar:**
 
@@ -563,10 +660,7 @@ These operations are **ALWAYS** blocked, regardless of confirmation settings:
 | Method | Endpoint | Reason |
 |--------|----------|--------|
 | `POST` | `/gmail/v1/users/{userId}/messages/send` | Send email |
-| `POST` | `/gmail/v1/users/{userId}/drafts` | Create draft |
 | `POST` | `/gmail/v1/users/{userId}/drafts/send` | Send draft |
-| `PUT` | `/gmail/v1/users/{userId}/drafts/{id}` | Update draft |
-| `DELETE` | `/gmail/v1/users/{userId}/drafts/{id}` | Delete draft |
 | `POST` | `/gmail/v1/users/{userId}/messages/import` | Import message |
 | `POST` | `/gmail/v1/users/{userId}/messages/insert` | Insert message |
 

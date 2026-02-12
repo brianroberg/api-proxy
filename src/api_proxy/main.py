@@ -87,10 +87,7 @@ def matches_path_pattern(path: str, pattern: str) -> bool:
 BLOCKED_PATHS = [
     # Send operations
     "/gmail/v1/users/{user_id}/messages/send",
-    # Draft operations
-    "/gmail/v1/users/{user_id}/drafts",
     "/gmail/v1/users/{user_id}/drafts/send",
-    "/gmail/v1/users/{user_id}/drafts/{draft_id}",
     # Import/insert operations
     "/gmail/v1/users/{user_id}/messages/import",
     "/gmail/v1/users/{user_id}/messages/insert",
@@ -110,6 +107,12 @@ ALLOWED_OPERATIONS = [
     ("POST", "/gmail/v1/users/{user_id}/messages/{message_id}/modify"),
     ("POST", "/gmail/v1/users/{user_id}/messages/{message_id}/trash"),
     ("POST", "/gmail/v1/users/{user_id}/messages/{message_id}/untrash"),
+    # Draft operations (CRUD, send is blocked above)
+    ("GET", "/gmail/v1/users/{user_id}/drafts"),
+    ("GET", "/gmail/v1/users/{user_id}/drafts/{draft_id}"),
+    ("POST", "/gmail/v1/users/{user_id}/drafts"),
+    ("PUT", "/gmail/v1/users/{user_id}/drafts/{draft_id}"),
+    ("DELETE", "/gmail/v1/users/{user_id}/drafts/{draft_id}"),
     # ==========================================================================
     # Calendar operations
     # ==========================================================================

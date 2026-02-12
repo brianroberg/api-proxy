@@ -15,7 +15,10 @@ from api_proxy.confirmation import (
     requires_confirmation,
 )
 from api_proxy.gmail.client import get_gmail_client
-from api_proxy.gmail.models import ModifyMessageRequest
+from api_proxy.gmail.models import (
+    DraftRequest,
+    ModifyMessageRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -463,6 +466,160 @@ async def untrash_message(request: Request, user_id: str, message_id: str):
     client = get_gmail_client()
     try:
         response = await client.request("POST", path)
+        return await forward_response(response)
+    except RuntimeError as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+
+# =============================================================================
+# DRAFT OPERATIONS
+# =============================================================================
+
+
+@router.get("/{user_id}/drafts")
+async def list_drafts(
+    request: Request,
+    user_id: str,
+    maxResults: Annotated[int | None, Query()] = None,
+    pageToken: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query()] = None,
+):
+    """List drafts in the user's mailbox."""
+    user_id = validate_user_id(user_id)
+    path = f"/gmail/v1/users/{user_id}/drafts"
+
+    await handle_confirmation(request, "GET", path, is_modify=False)
+
+    params = {}
+    if maxResults is not None:
+        params["maxResults"] = maxResults
+    if pageToken is not None:
+        params["pageToken"] = pageToken
+    if q is not None:
+        params["q"] = q
+
+    client = get_gmail_client()
+    try:
+        response = await client.request("GET", path, params=params or None)
+        return await forward_response(response)
+    except RuntimeError as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+
+@router.get("/{user_id}/drafts/{draft_id}")
+async def get_draft(
+    request: Request,
+    user_id: str,
+    draft_id: str,
+    format: Annotated[str | None, Query()] = None,
+):
+    """Get a specific draft by ID."""
+    user_id = validate_user_id(user_id)
+    draft_id = validate_resource_id(draft_id, "draft")
+    path = f"/gmail/v1/users/{user_id}/drafts/{draft_id}"
+
+    await handle_confirmation(request, "GET", path, is_modify=False)
+
+    params = {}
+    if format is not None:
+        params["format"] = format
+
+    client = get_gmail_client()
+    try:
+        response = await client.request("GET", path, params=params or None)
+        return await forward_response(response)
+    except RuntimeError as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+
+@router.post("/{user_id}/drafts")
+async def create_draft(
+    request: Request,
+    user_id: str,
+    body: DraftRequest,
+):
+    """Create a new draft."""
+    user_id = validate_user_id(user_id)
+    path = f"/gmail/v1/users/{user_id}/drafts"
+
+    await handle_confirmation(request, "POST", path, is_modify=False)
+
+    client = get_gmail_client()
+    try:
+        response = await client.request(
+            "POST",
+            path,
+            json_body=body.model_dump(exclude_none=True),
+        )
+        return await forward_response(response)
+    except RuntimeError as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+
+@router.put("/{user_id}/drafts/{draft_id}")
+async def update_draft(
+    request: Request,
+    user_id: str,
+    draft_id: str,
+    body: DraftRequest,
+):
+    """Update an existing draft."""
+    user_id = validate_user_id(user_id)
+    draft_id = validate_resource_id(draft_id, "draft")
+    path = f"/gmail/v1/users/{user_id}/drafts/{draft_id}"
+
+    await handle_confirmation(request, "PUT", path, is_modify=False)
+
+    client = get_gmail_client()
+    try:
+        response = await client.request(
+            "PUT",
+            path,
+            json_body=body.model_dump(exclude_none=True),
+        )
+        return await forward_response(response)
+    except RuntimeError as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+
+@router.delete("/{user_id}/drafts/{draft_id}")
+async def delete_draft(
+    request: Request,
+    user_id: str,
+    draft_id: str,
+):
+    """Delete a draft."""
+    user_id = validate_user_id(user_id)
+    draft_id = validate_resource_id(draft_id, "draft")
+    path = f"/gmail/v1/users/{user_id}/drafts/{draft_id}"
+
+    await handle_confirmation(request, "DELETE", path, is_modify=False)
+
+    client = get_gmail_client()
+    try:
+        response = await client.request("DELETE", path)
+        if response.status_code == 204:
+            return JSONResponse(status_code=204, content=None)
         return await forward_response(response)
     except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")

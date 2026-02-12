@@ -17,37 +17,11 @@ class TestBlockedOperations:
         assert data["error"] == "forbidden"
         assert "not allowed" in data["message"].lower()
 
-    def test_create_draft_blocked(self, client, auth_headers):
-        """POST /gmail/v1/users/me/drafts should be blocked."""
-        response = client.post(
-            "/gmail/v1/users/me/drafts",
-            json={"message": {"raw": "..."}},
-            headers=auth_headers,
-        )
-        assert response.status_code == 403
-
     def test_send_draft_blocked(self, client, auth_headers):
         """POST /gmail/v1/users/me/drafts/send should be blocked."""
         response = client.post(
             "/gmail/v1/users/me/drafts/send",
             json={"id": "draft123"},
-            headers=auth_headers,
-        )
-        assert response.status_code == 403
-
-    def test_update_draft_blocked(self, client, auth_headers):
-        """PUT /gmail/v1/users/me/drafts/{id} should be blocked."""
-        response = client.put(
-            "/gmail/v1/users/me/drafts/draft123",
-            json={"message": {"raw": "..."}},
-            headers=auth_headers,
-        )
-        assert response.status_code == 403
-
-    def test_delete_draft_blocked(self, client, auth_headers):
-        """DELETE /gmail/v1/users/me/drafts/{id} should be blocked."""
-        response = client.delete(
-            "/gmail/v1/users/me/drafts/draft123",
             headers=auth_headers,
         )
         assert response.status_code == 403
@@ -102,11 +76,11 @@ class TestBypassAttempts:
         )
         assert response.status_code == 403
 
-    def test_case_variation_drafts(self, client, auth_headers):
-        """Case variations of 'drafts' should still be blocked."""
+    def test_case_variation_drafts_send(self, client, auth_headers):
+        """Case variations of 'drafts/send' should still be blocked."""
         response = client.post(
-            "/gmail/v1/users/me/DRAFTS",
-            json={"message": {"raw": "..."}},
+            "/gmail/v1/users/me/DRAFTS/send",
+            json={"id": "draft123"},
             headers=auth_headers,
         )
         assert response.status_code == 403
@@ -183,13 +157,22 @@ class TestAuthenticationEnforcement:
             ("POST", "/gmail/v1/users/me/messages/msg1/modify"),
             ("POST", "/gmail/v1/users/me/messages/msg1/trash"),
             ("POST", "/gmail/v1/users/me/messages/msg1/untrash"),
+            ("GET", "/gmail/v1/users/me/drafts"),
+            ("GET", "/gmail/v1/users/me/drafts/draft1"),
+            ("POST", "/gmail/v1/users/me/drafts"),
+            ("PUT", "/gmail/v1/users/me/drafts/draft1"),
+            ("DELETE", "/gmail/v1/users/me/drafts/draft1"),
         ]
 
         for method, path in endpoints:
             if method == "GET":
                 response = client.get(path)
-            else:
+            elif method == "POST":
                 response = client.post(path, json={})
+            elif method == "PUT":
+                response = client.put(path, json={})
+            elif method == "DELETE":
+                response = client.delete(path)
 
             assert response.status_code == 401, f"Expected 401 for {method} {path}"
 
@@ -224,6 +207,66 @@ class TestAuthenticationEnforcement:
         )
         # Either 401 (auth first) or 403 (block first) is acceptable
         assert response.status_code in [401, 403]
+
+
+class TestDraftOperationsAllowed:
+    """Test that draft CRUD operations are allowed (not blocked by middleware)."""
+
+    def test_list_drafts_not_blocked(self, client, auth_headers, httpx_mock):
+        """GET /gmail/v1/users/me/drafts should pass middleware."""
+        httpx_mock.add_response(json={"drafts": [], "resultSizeEstimate": 0})
+        response = client.get(
+            "/gmail/v1/users/me/drafts",
+            headers=auth_headers,
+        )
+        assert response.status_code != 403
+
+    def test_get_draft_not_blocked(self, client, auth_headers, httpx_mock):
+        """GET /gmail/v1/users/me/drafts/{id} should pass middleware."""
+        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "msg1", "threadId": "t1"}})
+        response = client.get(
+            "/gmail/v1/users/me/drafts/draft1",
+            headers=auth_headers,
+        )
+        assert response.status_code != 403
+
+    def test_create_draft_not_blocked(self, client, auth_headers, httpx_mock):
+        """POST /gmail/v1/users/me/drafts should pass middleware."""
+        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "msg1", "threadId": "t1"}})
+        response = client.post(
+            "/gmail/v1/users/me/drafts",
+            json={"message": {"raw": "dGVzdA=="}},
+            headers=auth_headers,
+        )
+        assert response.status_code != 403
+
+    def test_update_draft_not_blocked(self, client, auth_headers, httpx_mock):
+        """PUT /gmail/v1/users/me/drafts/{id} should pass middleware."""
+        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "msg1", "threadId": "t1"}})
+        response = client.put(
+            "/gmail/v1/users/me/drafts/draft1",
+            json={"message": {"raw": "dGVzdA=="}},
+            headers=auth_headers,
+        )
+        assert response.status_code != 403
+
+    def test_delete_draft_not_blocked(self, client, auth_headers, httpx_mock):
+        """DELETE /gmail/v1/users/me/drafts/{id} should pass middleware."""
+        httpx_mock.add_response(status_code=204)
+        response = client.delete(
+            "/gmail/v1/users/me/drafts/draft1",
+            headers=auth_headers,
+        )
+        assert response.status_code != 403
+
+    def test_send_draft_still_blocked(self, client, auth_headers):
+        """POST /gmail/v1/users/me/drafts/send must remain blocked."""
+        response = client.post(
+            "/gmail/v1/users/me/drafts/send",
+            json={"id": "draft1"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 403
 
 
 class TestAllowlistApproach:
