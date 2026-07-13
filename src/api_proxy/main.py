@@ -126,6 +126,8 @@ ALLOWED_OPERATIONS = [
     ("PUT", "/calendar/v3/calendars/{calendar_id}/events/{event_id}"),
     ("PATCH", "/calendar/v3/calendars/{calendar_id}/events/{event_id}"),
     ("DELETE", "/calendar/v3/calendars/{calendar_id}/events/{event_id}"),
+    # Events - RSVP (respond to an invitation; only touches the owner's own status)
+    ("POST", "/calendar/v3/calendars/{calendar_id}/events/{event_id}/respond"),
 ]
 
 

@@ -63,6 +63,12 @@ class EventRequest(BaseModel):
     guestsCanSeeOtherGuests: bool | None = None
 
 
+class RespondRequest(BaseModel):
+    """Request body for RSVPing to an event (setting the owner's responseStatus)."""
+
+    responseStatus: str  # accepted, declined, or tentative
+
+
 class Event(BaseModel):
     """Google Calendar event (response)."""
 

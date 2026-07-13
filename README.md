@@ -626,6 +626,29 @@ curl -X DELETE "http://localhost:8000/calendar/v3/calendars/primary/events/abc12
   -H "Authorization: Bearer aproxy_..."
 ```
 
+#### Respond to Event (RSVP)
+
+`POST /calendar/v3/calendars/{calendarId}/events/{eventId}/respond`
+
+RSVP to an event by setting **only your own** response status. Unlike `PUT`/`PATCH`,
+the request body carries no attendee list — just a `responseStatus`. The proxy reads
+the event's current attendees, changes only the `self` attendee's status, and patches
+with `sendUpdates=none`, so **no invitations or notifications are ever sent**. This is
+why RSVP is allowed even though the generic create/update/patch routes reject any
+request containing attendees: the attendee list is built server-side and the caller
+can never add, remove, or alter other guests.
+
+**Request Body:**
+- `responseStatus` (string, required): one of `accepted`, `declined`, `tentative`
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8000/calendar/v3/calendars/primary/events/abc123/respond" \
+  -H "Authorization: Bearer aproxy_..." \
+  -H "Content-Type: application/json" \
+  -d '{"responseStatus": "accepted"}'
+```
+
 ## Security Model
 
 ### Two-Layer Security
@@ -669,6 +692,7 @@ The proxy uses an **allowlist** approach: only explicitly allowed operations are
 | `PUT` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Update event (full) |
 | `PATCH` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Update event (partial) |
 | `DELETE` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Delete event |
+| `POST` | `/calendar/v3/calendars/{calendarId}/events/{eventId}/respond` | RSVP (own status only, no notifications) |
 
 ### Blocked Operations (Critical)
 

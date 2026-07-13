@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from api_proxy.auth import verify_api_key
 from api_proxy.calendar.client import get_calendar_client
-from api_proxy.calendar.models import EventRequest
+from api_proxy.calendar.models import EventRequest, RespondRequest
 from api_proxy.confirmation import (
     ConfirmationRequest,
     get_confirmation_handler,
@@ -162,6 +162,27 @@ def _reject_if_has_attendees(body: EventRequest) -> None:
                            "Events with attendees could send invitations on your behalf.",
             },
         )
+
+
+def build_rsvp_attendees(attendees, new_status: str):
+    """
+    Build the attendee list for an RSVP patch.
+
+    Returns a copy of ``attendees`` with ONLY the ``self`` attendee's
+    ``responseStatus`` set to ``new_status``; every other attendee is preserved
+    unchanged. The read-only ``self``/``organizer`` flags are stripped so the
+    Calendar API accepts the write. Returns ``None`` if there is no self
+    attendee (the caller is not a guest and cannot RSVP).
+    """
+    if not any(a.get("self") for a in (attendees or [])):
+        return None
+    result = []
+    for attendee in attendees:
+        entry = {k: v for k, v in attendee.items() if k not in ("self", "organizer")}
+        if attendee.get("self"):
+            entry["responseStatus"] = new_status
+        result.append(entry)
+    return result
 
 
 def _format_event_datetime(dt) -> str | None:
@@ -578,6 +599,92 @@ async def delete_event(
     try:
         response = await client.request("DELETE", path, params=params or None)
         return await forward_response(response)
+    except RuntimeError as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+
+# =============================================================================
+# EVENTS - RSVP (respond to an invitation)
+# =============================================================================
+
+VALID_RSVP_STATUSES = {"accepted", "declined", "tentative"}
+
+
+@router.post("/calendars/{calendar_id}/events/{event_id}/respond")
+async def respond_to_event(
+    request: Request,
+    calendar_id: str,
+    event_id: str,
+    body: RespondRequest,
+):
+    """
+    RSVP to an event by setting ONLY the owner's own responseStatus.
+
+    Unlike PUT/PATCH, the caller supplies no attendee list — only a
+    responseStatus. The proxy reads the event's current attendees, changes only
+    the ``self`` attendee's status, and patches with ``sendUpdates=none`` so no
+    invitations or notifications are ever sent. This makes RSVP possible without
+    weakening the attendee-write block that guards create/update/patch: the
+    attendee list is constructed server-side and the caller can never add,
+    remove, or alter other guests.
+    """
+    calendar_id = validate_calendar_id(calendar_id)
+    event_id = validate_event_id(event_id)
+    path = f"/calendars/{calendar_id}/events/{event_id}"
+
+    if body.responseStatus not in VALID_RSVP_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "proxy_error",
+                "message": "responseStatus must be one of: accepted, declined, tentative",
+            },
+        )
+
+    client = get_calendar_client()
+
+    # Read the event to get its current attendee list.
+    try:
+        get_response = await client.request("GET", path)
+    except RuntimeError as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+    if get_response.status_code == 404:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "backend_error", "message": "Event not found"},
+        )
+    if get_response.status_code != 200:
+        return await forward_response(get_response)
+
+    attendees = get_response.json().get("attendees", [])
+    patched_attendees = build_rsvp_attendees(attendees, body.responseStatus)
+    if patched_attendees is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "proxy_error",
+                "message": "You are not an attendee of this event; cannot RSVP.",
+            },
+        )
+
+    # Patch only the response. sendUpdates=none is forced so no invitations go out.
+    try:
+        patch_response = await client.request(
+            "PATCH",
+            path,
+            params={"sendUpdates": "none"},
+            json_body={"attendees": patched_attendees},
+        )
+        return await forward_response(patch_response)
     except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
