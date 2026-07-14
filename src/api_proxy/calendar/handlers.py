@@ -3,8 +3,10 @@
 import json
 import logging
 import re
+import string
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
@@ -100,6 +102,76 @@ async def forward_response(response) -> JSONResponse:
         )
 
 
+def _json_dict_or_none(response) -> dict | None:
+    """Parse a backend body, returning None unless it is a JSON object."""
+    try:
+        data = response.json()
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _get_event_or_404(client, path: str) -> httpx.Response:
+    """
+    Fetch an event ahead of a write operation.
+
+    Maps the failures every write path handles identically: a missing event
+    raises a tagged 404 and a backend communication failure raises a tagged
+    502. Any other response is returned for the caller to handle.
+    """
+    try:
+        response = await client.request("GET", path)
+    except (RuntimeError, httpx.HTTPError) as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+    if response.status_code == 404:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "backend_error", "message": "Event not found"},
+        )
+    return response
+
+
+async def _resolve_authenticated_user_email(client) -> str:
+    """
+    Resolve the authenticated account's email address via its primary
+    calendar, whose id is the account's address.
+
+    The attendee ``self`` flag cannot identify the caller: it marks the
+    attendee matching the calendar an event copy sits on, so on a shared or
+    delegated calendar it points at another person. The primary-calendar id
+    is a best-effort identity signal — if it ever differs from the address
+    the caller was invited under, the RSVP fails closed as "not an attendee"
+    rather than touching anyone else's entry.
+    """
+    try:
+        response = await client.request("GET", "/calendars/primary")
+    except (RuntimeError, httpx.HTTPError) as e:
+        logger.error(f"Backend communication error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "backend_error", "message": str(e)},
+        ) from e
+
+    email = None
+    if response.status_code == 200:
+        data = _json_dict_or_none(response)
+        email = data.get("id") if data else None
+    if not isinstance(email, str) or "@" not in email:
+        logger.error(f"Could not resolve authenticated user email: {response.status_code}")
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "backend_error",
+                "message": "Could not resolve the authenticated user's email address",
+            },
+        )
+    return email
+
+
 async def handle_confirmation(
     request: Request,
     method: str,
@@ -110,6 +182,7 @@ async def handle_confirmation(
     send_updates: str | None = None,
     event_start: str | None = None,
     event_end: str | None = None,
+    rsvp_response: str | None = None,
 ) -> None:
     """
     Handle confirmation if required. Raises HTTPException if rejected.
@@ -127,6 +200,7 @@ async def handle_confirmation(
         send_updates=send_updates,
         event_start=event_start,
         event_end=event_end,
+        rsvp_response=rsvp_response,
     )
 
     approved = await handler.confirm(confirmation_request)
@@ -159,30 +233,47 @@ def _reject_if_has_attendees(body: EventRequest) -> None:
             detail={
                 "error": "forbidden",
                 "message": "Creating or updating events with attendees is not allowed. "
-                           "Events with attendees could send invitations on your behalf.",
+                "Events with attendees could send invitations on your behalf.",
             },
         )
 
 
-def build_rsvp_attendees(attendees, new_status: str):
-    """
-    Build the attendee list for an RSVP patch.
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
-    Returns a copy of ``attendees`` with ONLY the ``self`` attendee's
-    ``responseStatus`` set to ``new_status``; every other attendee is preserved
-    unchanged. The read-only ``self``/``organizer`` flags are stripped so the
-    Calendar API accepts the write. Returns ``None`` if there is no self
-    attendee (the caller is not a guest and cannot RSVP).
+
+def _normalize_email(value) -> str:
     """
-    if not any(a.get("self") for a in (attendees or [])):
+    Normalize an email for comparison: strip whitespace, lowercase ASCII only.
+
+    Full Unicode folding (str.lower/str.casefold) can conflate distinct
+    addresses (e.g. 'ß' folds to 'ss'), which would let a crafted attendee
+    entry collide with the caller's address and misdirect the RSVP patch.
+    Non-strings normalize to "" (never matches).
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.strip().translate(_ASCII_LOWER)
+
+
+def build_rsvp_attendees(attendees, user_email: str, new_status: str) -> list[dict] | None:
+    """
+    Build the single-entry attendee list for an RSVP patch.
+
+    Identifies the caller's own entry in ``attendees`` by ASCII-case-
+    insensitive email match against ``user_email`` (the authenticated
+    account). Returns a one-entry list carrying only that attendee's email
+    and the new ``responseStatus``, suitable for a PATCH with
+    ``attendeesOmitted=true`` — the Calendar API then updates just that entry
+    and leaves every other guest untouched. Returns ``None`` if the caller is
+    not an attendee.
+    """
+    target = _normalize_email(user_email)
+    if not target:
         return None
-    result = []
-    for attendee in attendees:
-        entry = {k: v for k, v in attendee.items() if k not in ("self", "organizer")}
-        if attendee.get("self"):
-            entry["responseStatus"] = new_status
-        result.append(entry)
-    return result
+    for attendee in attendees or []:
+        if _normalize_email(attendee.get("email")) == target:
+            return [{"email": attendee["email"], "responseStatus": new_status}]
+    return None
 
 
 def _format_event_datetime(dt) -> str | None:
@@ -561,24 +652,14 @@ async def delete_event(
     event_start = None
     event_end = None
 
-    try:
-        response = await client.request("GET", path)
-        if response.status_code == 404:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "backend_error", "message": "Event not found"},
-            )
-        elif response.status_code == 200:
-            event_data = response.json()
-            event_summary = event_data.get("summary", event_summary)
-            event_start = _format_event_datetime(event_data.get("start"))
-            event_end = _format_event_datetime(event_data.get("end"))
-        else:
-            logger.warning(f"Failed to fetch event metadata: {response.status_code}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Failed to fetch event for delete confirmation: {e}")
+    response = await _get_event_or_404(client, path)
+    event_data = _json_dict_or_none(response) if response.status_code == 200 else None
+    if event_data is not None:
+        event_summary = event_data.get("summary", event_summary)
+        event_start = _format_event_datetime(event_data.get("start"))
+        event_end = _format_event_datetime(event_data.get("end"))
+    else:
+        logger.warning(f"Failed to fetch event metadata: {response.status_code}")
 
     # DELETE always requires confirmation (is_modify=True)
     await handle_confirmation(
@@ -599,7 +680,7 @@ async def delete_event(
     try:
         response = await client.request("DELETE", path, params=params or None)
         return await forward_response(response)
-    except RuntimeError as e:
+    except (RuntimeError, httpx.HTTPError) as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
@@ -611,7 +692,16 @@ async def delete_event(
 # EVENTS - RSVP (respond to an invitation)
 # =============================================================================
 
-VALID_RSVP_STATUSES = {"accepted", "declined", "tentative"}
+
+def _not_an_attendee_error() -> HTTPException:
+    """Error for RSVP attempts by a non-attendee."""
+    return HTTPException(
+        status_code=400,
+        detail={
+            "error": "proxy_error",
+            "message": "You are not an attendee of this event; cannot RSVP.",
+        },
+    )
 
 
 @router.post("/calendars/{calendar_id}/events/{event_id}/respond")
@@ -622,70 +712,74 @@ async def respond_to_event(
     body: RespondRequest,
 ):
     """
-    RSVP to an event by setting ONLY the owner's own responseStatus.
+    RSVP to an event by setting ONLY the caller's own responseStatus.
 
     Unlike PUT/PATCH, the caller supplies no attendee list — only a
-    responseStatus. The proxy reads the event's current attendees, changes only
-    the ``self`` attendee's status, and patches with ``sendUpdates=none`` so no
-    invitations or notifications are ever sent. This makes RSVP possible without
-    weakening the attendee-write block that guards create/update/patch: the
-    attendee list is constructed server-side and the caller can never add,
-    remove, or alter other guests.
+    responseStatus. The proxy reads the event, identifies the authenticated
+    account's own attendee entry by email (the ``self`` flag is not trusted:
+    on a shared calendar it marks the calendar's owner, not the caller), and
+    patches just that entry with ``attendeesOmitted=true`` so the backend
+    merges it instead of replacing the attendee list. ``sendUpdates=none`` is
+    forced so no invitation emails are sent, and like other modifying
+    operations the write requires operator confirmation. This makes RSVP
+    possible without weakening the attendee-write block that guards
+    create/update/patch: the attendee entry is constructed server-side and
+    the caller can never add, remove, or alter other guests.
     """
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
     path = f"/calendars/{calendar_id}/events/{event_id}"
 
-    if body.responseStatus not in VALID_RSVP_STATUSES:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "proxy_error",
-                "message": "responseStatus must be one of: accepted, declined, tentative",
-            },
-        )
-
     client = get_calendar_client()
 
-    # Read the event to get its current attendee list.
-    try:
-        get_response = await client.request("GET", path)
-    except RuntimeError as e:
-        logger.error(f"Backend communication error: {e}")
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
-        ) from e
-
-    if get_response.status_code == 404:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "backend_error", "message": "Event not found"},
-        )
+    # Read the event to find the caller's attendee entry and to enrich the
+    # confirmation prompt.
+    get_response = await _get_event_or_404(client, path)
     if get_response.status_code != 200:
         return await forward_response(get_response)
 
-    attendees = get_response.json().get("attendees", [])
-    patched_attendees = build_rsvp_attendees(attendees, body.responseStatus)
-    if patched_attendees is None:
+    event_data = _json_dict_or_none(get_response)
+    if event_data is None:
+        logger.warning("Failed to parse event body from Calendar API for RSVP")
         raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "proxy_error",
-                "message": "You are not an attendee of this event; cannot RSVP.",
-            },
+            status_code=502,
+            detail={"error": "backend_error", "message": "Invalid JSON response from backend"},
         )
 
-    # Patch only the response. sendUpdates=none is forced so no invitations go out.
+    attendees = event_data.get("attendees") or []
+    if not attendees:
+        raise _not_an_attendee_error()
+
+    user_email = await _resolve_authenticated_user_email(client)
+    patched_attendees = build_rsvp_attendees(attendees, user_email, body.responseStatus)
+    if patched_attendees is None:
+        raise _not_an_attendee_error()
+
+    # An RSVP is visible to the organizer, so treat it like any other
+    # modifying operation and require confirmation before writing.
+    await handle_confirmation(
+        request,
+        "POST",
+        f"{path}/respond",
+        is_modify=True,
+        event_summary=event_data.get("summary", f"Event ID: {event_id}"),
+        event_start=_format_event_datetime(event_data.get("start")),
+        event_end=_format_event_datetime(event_data.get("end")),
+        rsvp_response=body.responseStatus,
+    )
+
+    # Patch only the caller's own entry: attendeesOmitted makes the Calendar
+    # API merge this entry instead of replacing the attendee list, and
+    # sendUpdates=none is forced so no invitations go out.
     try:
         patch_response = await client.request(
             "PATCH",
             path,
             params={"sendUpdates": "none"},
-            json_body={"attendees": patched_attendees},
+            json_body={"attendees": patched_attendees, "attendeesOmitted": True},
         )
         return await forward_response(patch_response)
-    except RuntimeError as e:
+    except (RuntimeError, httpx.HTTPError) as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,

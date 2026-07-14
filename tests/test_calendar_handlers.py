@@ -1,6 +1,8 @@
 """Tests for Google Calendar API handlers."""
 
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock, patch
+
+import httpx
 
 
 class TestListCalendars:
@@ -377,6 +379,25 @@ class TestDeleteEvent:
             )
 
         assert response.status_code == 204
+
+    def test_transport_error_during_prefetch_returns_502(
+        self, client, auth_headers, config_no_confirm
+    ):
+        """The pre-delete event fetch fails closed: a backend transport
+        error aborts with a tagged 502 instead of attempting the DELETE."""
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
+            mock_get_client.return_value = mock_client
+
+            response = client.delete(
+                "/calendar/v3/calendars/primary/events/event1",
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 502
+        assert response.json()["error"] == "backend_error"
+        assert mock_client.request.await_count == 1  # no DELETE attempted
 
 
 class TestCalendarApiErrors:

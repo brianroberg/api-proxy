@@ -1,5 +1,7 @@
 """Google Calendar API Pydantic models."""
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -64,9 +66,9 @@ class EventRequest(BaseModel):
 
 
 class RespondRequest(BaseModel):
-    """Request body for RSVPing to an event (setting the owner's responseStatus)."""
+    """Request body for RSVPing to an event (setting the caller's own responseStatus)."""
 
-    responseStatus: str  # accepted, declined, or tentative
+    responseStatus: Literal["accepted", "declined", "tentative"]
 
 
 class Event(BaseModel):
