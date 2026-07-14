@@ -626,6 +626,46 @@ curl -X DELETE "http://localhost:8000/calendar/v3/calendars/primary/events/abc12
   -H "Authorization: Bearer aproxy_..."
 ```
 
+#### Respond to Event (RSVP)
+
+`POST /calendar/v3/calendars/{calendarId}/events/{eventId}/respond`
+
+RSVP to an event by setting **only your own** response status. Unlike `PUT`/`PATCH`,
+the request body carries no attendee list — just a `responseStatus`. The proxy
+resolves the caller's own attendee entry by fetching the authenticated account's
+email address (via `GET /calendars/primary`) and matching it, case-insensitively,
+against the event's attendee list. It deliberately does **not** trust the Calendar
+API's `self` flag, which on a shared or delegated calendar marks the owner of that
+calendar copy rather than the person actually making the request. The PATCH sent to
+the backend carries only that single attendee entry plus `attendeesOmitted: true`,
+so the Calendar API updates just the caller's response and never has to read back
+or rewrite the rest of the guest list. `sendUpdates=none` is still forced, so **no
+invitations or notifications are ever sent**. This is why RSVP is allowed even
+though the generic create/update/patch routes reject any request containing
+attendees: the attendee list sent to the backend is built server-side and the
+caller can never add, remove, or alter other guests.
+
+Like other modifying operations, this request is subject to confirmation when the
+proxy runs in `--confirm-modify` (default) or `--confirm-all` mode; the operator
+prompt shows the event and the RSVP response being set.
+
+If the caller's email isn't found among the event's attendees, the proxy returns
+`400 Bad Request` without writing anything to the backend (the event and the
+caller's identity are still read from it). Requests with an invalid
+`responseStatus` (anything other than `accepted`, `declined`, or `tentative`) fail
+validation and return `422 Unprocessable Entity` before any backend calls are made.
+
+**Request Body:**
+- `responseStatus` (string, required): one of `accepted`, `declined`, `tentative`
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8000/calendar/v3/calendars/primary/events/abc123/respond" \
+  -H "Authorization: Bearer aproxy_..." \
+  -H "Content-Type: application/json" \
+  -d '{"responseStatus": "accepted"}'
+```
+
 ## Security Model
 
 ### Two-Layer Security
@@ -669,6 +709,7 @@ The proxy uses an **allowlist** approach: only explicitly allowed operations are
 | `PUT` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Update event (full) |
 | `PATCH` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Update event (partial) |
 | `DELETE` | `/calendar/v3/calendars/{calendarId}/events/{eventId}` | Delete event |
+| `POST` | `/calendar/v3/calendars/{calendarId}/events/{eventId}/respond` | RSVP (own status only, no notifications) |
 
 ### Blocked Operations (Critical)
 

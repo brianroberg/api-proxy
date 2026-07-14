@@ -31,6 +31,7 @@ class PendingRequest:
     send_updates: str | None
     event_start: str | None
     event_end: str | None
+    rsvp_response: str | None
     created_at: float
     result_future: asyncio.Future
 
@@ -51,6 +52,7 @@ def _pending_to_dict(pending: PendingRequest) -> dict:
         "send_updates": pending.send_updates,
         "event_start": pending.event_start,
         "event_end": pending.event_end,
+        "rsvp_response": pending.rsvp_response,
         "created_at": pending.created_at,
     }
 
@@ -64,7 +66,9 @@ class WebConfirmationQueue:
         self._lock = asyncio.Lock()
         self._subscribers: list[asyncio.Queue] = []
 
-    async def _notify_subscribers(self, event_type: str, pending_snapshot: list[dict] | None = None) -> None:
+    async def _notify_subscribers(
+        self, event_type: str, pending_snapshot: list[dict] | None = None
+    ) -> None:
         """Notify all SSE subscribers of a queue change.
 
         Args:
@@ -106,6 +110,7 @@ class WebConfirmationQueue:
         send_updates: str | None = None,
         event_start: str | None = None,
         event_end: str | None = None,
+        rsvp_response: str | None = None,
     ) -> bool:
         """
         Add request to queue and wait for approval.
@@ -133,6 +138,7 @@ class WebConfirmationQueue:
             send_updates=send_updates,
             event_start=event_start,
             event_end=event_end,
+            rsvp_response=rsvp_response,
             created_at=time.time(),
             result_future=future,
         )
@@ -184,7 +190,9 @@ class WebConfirmationQueue:
 
             if not pending.result_future.done():
                 pending.result_future.set_result(True)
-                logger.info(f"Request {request_id} APPROVED via web: {pending.method} {pending.path}")
+                logger.info(
+                    f"Request {request_id} APPROVED via web: {pending.method} {pending.path}"
+                )
 
             pending_snapshot = self.get_pending_sync()
 
@@ -205,7 +213,9 @@ class WebConfirmationQueue:
 
             if not pending.result_future.done():
                 pending.result_future.set_result(False)
-                logger.info(f"Request {request_id} REJECTED via web: {pending.method} {pending.path}")
+                logger.info(
+                    f"Request {request_id} REJECTED via web: {pending.method} {pending.path}"
+                )
 
             pending_snapshot = self.get_pending_sync()
 

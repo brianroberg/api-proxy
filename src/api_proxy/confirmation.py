@@ -34,6 +34,7 @@ class ConfirmationRequest:
     send_updates: str | None = None  # "all", "externalOnly", "none"
     event_start: str | None = None  # Event start date/time
     event_end: str | None = None  # Event end date/time
+    rsvp_response: str | None = None  # responseStatus being set by an RSVP
     # Operation classification
     operation_type: str | None = None  # "label", "trash", "untrash", etc.
 
@@ -77,6 +78,9 @@ class ConfirmationHandler:
 
         if request.event_end:
             lines.append(f"  End: {request.event_end}")
+
+        if request.rsvp_response:
+            lines.append(f"  RSVP response: {request.rsvp_response}")
 
         if request.event_attendees:
             lines.append(f"  Attendees: {', '.join(request.event_attendees)}")
@@ -129,6 +133,7 @@ class ConfirmationHandler:
                 send_updates=request.send_updates,
                 event_start=request.event_start,
                 event_end=request.event_end,
+                rsvp_response=request.rsvp_response,
             )
             if approved:
                 logger.info(f"Request APPROVED: {request.method} {request.path}")
@@ -144,17 +149,13 @@ class ConfirmationHandler:
             response = await self._get_input(prompt, config.confirmation_timeout)
 
             if response in ("y", "yes"):
-                logger.info(
-                    f"Request APPROVED: {request.method} {request.path}"
-                )
+                logger.info(f"Request APPROVED: {request.method} {request.path}")
                 sys.stdout.write("[APPROVED]\n")
                 sys.stdout.flush()
                 return True
             else:
                 reason = "timed out" if response is None else "rejected"
-                logger.info(
-                    f"Request REJECTED ({reason}): {request.method} {request.path}"
-                )
+                logger.info(f"Request REJECTED ({reason}): {request.method} {request.path}")
                 if response is not None:
                     sys.stdout.write("[REJECTED]\n")
                     sys.stdout.flush()

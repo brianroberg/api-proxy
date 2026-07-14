@@ -396,6 +396,7 @@
                               request.event_summary ||
                               request.event_start ||
                               request.event_end ||
+                              request.rsvp_response ||
                               (request.event_attendees && request.event_attendees.length > 0) ||
                               request.send_updates;
 
@@ -438,6 +439,10 @@
 
                 if (request.event_end) {
                     details.appendChild(createDetailRow('End', request.event_end));
+                }
+
+                if (request.rsvp_response) {
+                    details.appendChild(createDetailRow('RSVP response', request.rsvp_response));
                 }
 
                 if (request.event_attendees && request.event_attendees.length > 0) {
