@@ -413,6 +413,32 @@ Create a new draft with a base64url-encoded RFC 2822 message. The optional
 `threadId` attaches the draft to an existing Gmail conversation (reply
 threading); without it, Gmail places the draft in a fresh thread.
 
+The proxy validates the body before contacting Gmail:
+
+- `threadId` must be a string of ASCII letters, digits, `_`, or `-` (no
+  whitespace, newlines, or other characters anywhere in the value); strings
+  that don't qualify are rejected with a 400 `proxy_error`. A bare JSON
+  integer is also accepted and coerced to a string, and JSON `null` is
+  treated as absent; any other non-string value (boolean, float, array,
+  object) is rejected with a 422 `proxy_error`.
+- Unknown fields are rejected with a 422 `proxy_error` naming the offending
+  field, so a misspelled or misplaced `threadId` (e.g. `thread_id`, or
+  `threadId` outside `message`) fails loudly instead of silently detaching
+  the draft from its conversation.
+- Output-only fields of the canonical Draft resource (`id`, plus
+  `message.id`, `message.labelIds`, `message.snippet`, `message.historyId`,
+  `message.internalDate`, and `message.sizeEstimate`) are accepted and
+  ignored, so a `drafts.get(format="raw")` → modify → update round trip
+  works; only `message.raw` and `message.threadId` are forwarded to Gmail.
+
+For Gmail to actually thread the draft, the raw message itself must qualify
+as a reply per [Gmail's threading rules](https://developers.google.com/gmail/api/guides/threads):
+its `Subject` must match the thread's subject, and its `References` and
+`In-Reply-To` headers must reference the message being replied to. A
+`threadId` alone is not sufficient—if the raw message lacks these headers,
+Gmail may reject the request with a 400 `backend_error` or ignore the
+threading.
+
 **Request Body:**
 ```json
 {
@@ -438,6 +464,8 @@ curl -X POST "http://localhost:8000/gmail/v1/users/me/drafts" \
 Replace an existing draft's message content. The optional `threadId` keeps
 or sets the draft's Gmail conversation; the update replaces the whole
 message resource, so omitting it detaches a previously threaded draft.
+The same `threadId` validation and threading-header requirements as
+[Create Draft](#create-draft) apply.
 
 **Request Body:**
 ```json
@@ -757,6 +785,16 @@ When confirmation is required, the operator sees:
 [CONFIRM] POST /gmail/v1/users/me/messages/abc123/modify
   Add labels: STARRED
   Remove labels: UNREAD
+Allow this request? [y/N]:
+```
+
+Draft create/update prompts include the thread the draft attaches to, so the
+operator can distinguish a fresh-thread draft from one that attaches content
+to an existing conversation:
+
+```
+[CONFIRM] POST /gmail/v1/users/me/drafts
+  Thread: 18d5a1b2c3d4e5f6 (attaches to existing conversation)
 Allow this request? [y/N]:
 ```
 

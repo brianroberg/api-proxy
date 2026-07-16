@@ -28,6 +28,7 @@ class ConfirmationRequest:
     labels_to_remove: list[str] | None = None
     message_sender: str | None = None  # Email sender for trash/untrash
     message_subject: str | None = None  # Email subject for trash/untrash
+    draft_thread_id: str | None = None  # Thread a draft attaches to (create/update)
     # Calendar-specific fields
     event_summary: str | None = None
     event_attendees: list[str] | None = None
@@ -62,6 +63,9 @@ class ConfirmationHandler:
 
         if request.message_subject:
             lines.append(f"  Subject: {request.message_subject}")
+
+        if request.draft_thread_id:
+            lines.append(f"  Thread: {request.draft_thread_id} (attaches to existing conversation)")
 
         if request.labels_to_add:
             lines.append(f"  Add labels: {', '.join(request.labels_to_add)}")
@@ -128,6 +132,7 @@ class ConfirmationHandler:
                 labels_to_remove=request.labels_to_remove,
                 message_sender=request.message_sender,
                 message_subject=request.message_subject,
+                draft_thread_id=request.draft_thread_id,
                 event_summary=request.event_summary,
                 event_attendees=request.event_attendees,
                 send_updates=request.send_updates,

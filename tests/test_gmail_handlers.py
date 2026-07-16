@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 
 class TestListMessages:
     """Tests for GET /gmail/v1/users/{userId}/messages."""
@@ -316,6 +318,25 @@ class TestUserIdValidation:
         assert response.status_code == 200
 
 
+# Draft create/update behave identically for body handling; every draft body
+# test runs against both. (method, proxy path, Gmail URL the body must go to)
+DRAFT_ENDPOINTS = [
+    pytest.param(
+        "post",
+        "/gmail/v1/users/me/drafts",
+        "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+        id="create",
+    ),
+    pytest.param(
+        "put",
+        "/gmail/v1/users/me/drafts/draft1",
+        "https://gmail.googleapis.com/gmail/v1/users/me/drafts/draft1",
+        id="update",
+    ),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "gmail_url"), DRAFT_ENDPOINTS)
 class TestDraftThreadId:
     """Drafts create/update must forward message.threadId to Gmail.
 
@@ -323,35 +344,172 @@ class TestDraftThreadId:
     silently dropping it strands every reply draft in a fresh thread.
     """
 
-    def test_create_draft_forwards_thread_id(self, client, auth_headers, httpx_mock):
-        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "m1", "threadId": "t1"}})
-        response = client.post(
-            "/gmail/v1/users/me/drafts",
+    def test_forwards_thread_id(self, client, auth_headers, httpx_mock, method, path, gmail_url):
+        httpx_mock.add_response(
+            url=gmail_url, json={"id": "draft1", "message": {"id": "m1", "threadId": "t1"}}
+        )
+        response = getattr(client, method)(
+            path,
             json={"message": {"raw": "dGVzdA==", "threadId": "t1"}},
             headers=auth_headers,
         )
         assert response.status_code == 200
         forwarded = json.loads(httpx_mock.get_requests()[-1].content)
-        assert forwarded["message"]["threadId"] == "t1"
+        assert forwarded["message"] == {"raw": "dGVzdA==", "threadId": "t1"}
 
-    def test_create_draft_omits_thread_id_when_absent(self, client, auth_headers, httpx_mock):
-        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "m1", "threadId": "t_new"}})
-        response = client.post(
-            "/gmail/v1/users/me/drafts",
+    def test_omits_thread_id_when_absent(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url
+    ):
+        httpx_mock.add_response(
+            url=gmail_url, json={"id": "draft1", "message": {"id": "m1", "threadId": "t_new"}}
+        )
+        response = getattr(client, method)(
+            path,
             json={"message": {"raw": "dGVzdA=="}},
             headers=auth_headers,
         )
         assert response.status_code == 200
         forwarded = json.loads(httpx_mock.get_requests()[-1].content)
-        assert "threadId" not in forwarded["message"]
+        assert forwarded["message"] == {"raw": "dGVzdA=="}
 
-    def test_update_draft_forwards_thread_id(self, client, auth_headers, httpx_mock):
-        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "m1", "threadId": "t1"}})
-        response = client.put(
-            "/gmail/v1/users/me/drafts/draft1",
-            json={"message": {"raw": "dGVzdA==", "threadId": "t1"}},
+    def test_accepts_numeric_thread_id(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url
+    ):
+        """A JSON number threadId is coerced to a string, not rejected."""
+        httpx_mock.add_response(
+            url=gmail_url, json={"id": "draft1", "message": {"id": "m1", "threadId": "12345"}}
+        )
+        response = getattr(client, method)(
+            path,
+            json={"message": {"raw": "dGVzdA==", "threadId": 12345}},
             headers=auth_headers,
         )
         assert response.status_code == 200
         forwarded = json.loads(httpx_mock.get_requests()[-1].content)
-        assert forwarded["message"]["threadId"] == "t1"
+        assert forwarded["message"] == {"raw": "dGVzdA==", "threadId": "12345"}
+
+    def test_ignores_output_only_resource_fields(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url
+    ):
+        """A drafts.get(format="raw") round trip works: output-only Draft
+        resource fields are accepted but never forwarded to Gmail."""
+        httpx_mock.add_response(
+            url=gmail_url, json={"id": "draft1", "message": {"id": "m1", "threadId": "t1"}}
+        )
+        response = getattr(client, method)(
+            path,
+            json={
+                "id": "draft1",
+                "message": {
+                    "id": "m1",
+                    "raw": "dGVzdA==",
+                    "threadId": "t1",
+                    "labelIds": ["DRAFT"],
+                    "snippet": "test",
+                    "historyId": "12345",
+                    "internalDate": "1717000000000",
+                    "sizeEstimate": 4,
+                },
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        forwarded = json.loads(httpx_mock.get_requests()[-1].content)
+        assert forwarded == {"message": {"raw": "dGVzdA==", "threadId": "t1"}}
+
+
+@pytest.mark.parametrize(("method", "path", "gmail_url"), DRAFT_ENDPOINTS)
+class TestDraftBodyValidation:
+    """Malformed or misplaced draft body fields are rejected before Gmail is contacted."""
+
+    @pytest.mark.parametrize("bad_id", ["", "t1 t2", "t1\n", "../evil"])
+    def test_rejects_malformed_thread_id(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url, bad_id
+    ):
+        response = getattr(client, method)(
+            path,
+            json={"message": {"raw": "dGVzdA==", "threadId": bad_id}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+        data = response.json()
+        assert data["error"] == "proxy_error"
+        assert "thread" in data["message"].lower()
+        assert httpx_mock.get_requests() == []
+
+    def test_rejects_misspelled_thread_id_key(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url
+    ):
+        """A snake_case thread_id must fail loudly, not silently detach the draft."""
+        response = getattr(client, method)(
+            path,
+            json={"message": {"raw": "dGVzdA==", "thread_id": "t1"}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+        data = response.json()
+        assert data["error"] == "proxy_error"
+        assert "thread_id" in data["message"]
+        assert httpx_mock.get_requests() == []
+
+    def test_rejects_top_level_thread_id(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url
+    ):
+        """threadId outside message must fail loudly, not silently detach the draft."""
+        response = getattr(client, method)(
+            path,
+            json={"message": {"raw": "dGVzdA=="}, "threadId": "t1"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+        data = response.json()
+        assert data["error"] == "proxy_error"
+        assert "threadId" in data["message"]
+        assert httpx_mock.get_requests() == []
+
+    def test_rejects_boolean_thread_id(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url
+    ):
+        """bool is an int subclass but must not be coerced to a thread ID."""
+        response = getattr(client, method)(
+            path,
+            json={"message": {"raw": "dGVzdA==", "threadId": True}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+        data = response.json()
+        assert data["error"] == "proxy_error"
+        assert "threadId" in data["message"]
+        assert httpx_mock.get_requests() == []
+
+    def test_names_offending_field_named_body(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url
+    ):
+        """The 422 message names the full field path even for a field
+        literally named "body" (only the leading source marker is dropped)."""
+        response = getattr(client, method)(
+            path,
+            json={"message": {"raw": "dGVzdA==", "body": "z"}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+        data = response.json()
+        assert data["error"] == "proxy_error"
+        assert "message.body" in data["message"]
+        assert httpx_mock.get_requests() == []
+
+    def test_malformed_json_reports_decode_error(
+        self, client, auth_headers, httpx_mock, method, path, gmail_url
+    ):
+        """Malformed JSON reports a decode error, not a byte offset posing
+        as a field name."""
+        response = getattr(client, method)(
+            path,
+            content=b'{"message": {',
+            headers={**auth_headers, "Content-Type": "application/json"},
+        )
+        assert response.status_code == 422
+        data = response.json()
+        assert data["error"] == "proxy_error"
+        assert data["message"] == "Invalid request parameters: JSON decode error"
+        assert httpx_mock.get_requests() == []

@@ -264,9 +264,28 @@ async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     """Handle validation errors."""
+    # Name the offending fields so callers can diagnose the rejection, but
+    # only via location and error kind — never echo the submitted value,
+    # which may contain message content.
+    problems = []
+    for error in exc.errors()[:5]:
+        loc_parts = [str(part) for part in error.get("loc", ())]
+        # Drop only the leading request-source marker; a field may itself
+        # be named "body".
+        if loc_parts and loc_parts[0] == "body":
+            loc_parts = loc_parts[1:]
+        # For malformed JSON the remaining loc is a byte offset, not a field
+        if error.get("type") == "json_invalid":
+            loc_parts = []
+        loc = ".".join(loc_parts)
+        msg = error.get("msg", "invalid value")
+        problems.append(f"{loc}: {msg}" if loc else msg)
+    message = "Invalid request parameters"
+    if problems:
+        message = f"{message}: {'; '.join(problems)}"
     return JSONResponse(
         status_code=422,
-        content=ErrorResponse.proxy_error("Invalid request parameters").model_dump(),
+        content=ErrorResponse.proxy_error(message).model_dump(),
     )
 
 

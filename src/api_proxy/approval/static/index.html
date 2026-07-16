@@ -393,6 +393,7 @@
                               (request.labels_to_remove && request.labels_to_remove.length > 0) ||
                               request.message_sender ||
                               request.message_subject ||
+                              request.draft_thread_id ||
                               request.event_summary ||
                               request.event_start ||
                               request.event_end ||
@@ -418,6 +419,10 @@
 
                 if (request.message_subject) {
                     details.appendChild(createDetailRow('Subject', request.message_subject));
+                }
+
+                if (request.draft_thread_id) {
+                    details.appendChild(createDetailRow('Thread', request.draft_thread_id + ' (attaches to existing conversation)'));
                 }
 
                 if (request.labels_to_add && request.labels_to_add.length > 0) {
