@@ -409,13 +409,16 @@ curl "http://localhost:8000/gmail/v1/users/me/drafts/r1234567890" \
 
 `POST /gmail/v1/users/{userId}/drafts`
 
-Create a new draft with a base64url-encoded RFC 2822 message.
+Create a new draft with a base64url-encoded RFC 2822 message. The optional
+`threadId` attaches the draft to an existing Gmail conversation (reply
+threading); without it, Gmail places the draft in a fresh thread.
 
 **Request Body:**
 ```json
 {
   "message": {
-    "raw": "base64url-encoded-RFC-2822-message"
+    "raw": "base64url-encoded-RFC-2822-message",
+    "threadId": "optional-gmail-thread-id"
   }
 }
 ```
@@ -432,13 +435,16 @@ curl -X POST "http://localhost:8000/gmail/v1/users/me/drafts" \
 
 `PUT /gmail/v1/users/{userId}/drafts/{id}`
 
-Replace an existing draft's message content.
+Replace an existing draft's message content. The optional `threadId` keeps
+or sets the draft's Gmail conversation; the update replaces the whole
+message resource, so omitting it detaches a previously threaded draft.
 
 **Request Body:**
 ```json
 {
   "message": {
-    "raw": "base64url-encoded-RFC-2822-message"
+    "raw": "base64url-encoded-RFC-2822-message",
+    "threadId": "optional-gmail-thread-id"
   }
 }
 ```

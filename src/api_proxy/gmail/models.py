@@ -83,6 +83,9 @@ class DraftMessageBody(BaseModel):
     """Message body within a draft create/update request."""
 
     raw: str
+    # Gmail thread to attach the draft to (reply threading). Optional and
+    # forwarded as-is; without it Gmail puts the draft in a fresh thread.
+    threadId: str | None = None
 
 
 class DraftRequest(BaseModel):

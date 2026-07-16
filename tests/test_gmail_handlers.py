@@ -1,5 +1,7 @@
 """Tests for Gmail API handlers."""
 
+import json
+
 
 class TestListMessages:
     """Tests for GET /gmail/v1/users/{userId}/messages."""
@@ -312,3 +314,44 @@ class TestUserIdValidation:
             headers=auth_headers,
         )
         assert response.status_code == 200
+
+
+class TestDraftThreadId:
+    """Drafts create/update must forward message.threadId to Gmail.
+
+    threadId is what attaches a reply draft to its Gmail conversation;
+    silently dropping it strands every reply draft in a fresh thread.
+    """
+
+    def test_create_draft_forwards_thread_id(self, client, auth_headers, httpx_mock):
+        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "m1", "threadId": "t1"}})
+        response = client.post(
+            "/gmail/v1/users/me/drafts",
+            json={"message": {"raw": "dGVzdA==", "threadId": "t1"}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        forwarded = json.loads(httpx_mock.get_requests()[-1].content)
+        assert forwarded["message"]["threadId"] == "t1"
+
+    def test_create_draft_omits_thread_id_when_absent(self, client, auth_headers, httpx_mock):
+        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "m1", "threadId": "t_new"}})
+        response = client.post(
+            "/gmail/v1/users/me/drafts",
+            json={"message": {"raw": "dGVzdA=="}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        forwarded = json.loads(httpx_mock.get_requests()[-1].content)
+        assert "threadId" not in forwarded["message"]
+
+    def test_update_draft_forwards_thread_id(self, client, auth_headers, httpx_mock):
+        httpx_mock.add_response(json={"id": "draft1", "message": {"id": "m1", "threadId": "t1"}})
+        response = client.put(
+            "/gmail/v1/users/me/drafts/draft1",
+            json={"message": {"raw": "dGVzdA==", "threadId": "t1"}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        forwarded = json.loads(httpx_mock.get_requests()[-1].content)
+        assert forwarded["message"]["threadId"] == "t1"
