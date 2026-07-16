@@ -155,6 +155,20 @@ class TestConfirmationPrompt:
         assert "Add labels" in prompt
         assert "Remove labels" in prompt
 
+    @pytest.mark.asyncio
+    async def test_prompt_includes_draft_thread_id(self, config_confirm_all):
+        """Confirmation prompt should show the thread a draft attaches to."""
+        handler = ConfirmationHandler()
+        request = ConfirmationRequest(
+            method="POST",
+            path="/gmail/v1/users/me/drafts",
+            draft_thread_id="t123",
+        )
+
+        prompt = handler._format_prompt(request)
+
+        assert "Thread: t123" in prompt
+
 
 class TestConfirmationTimeout:
     """Test confirmation timeout behavior."""
@@ -221,6 +235,54 @@ class TestIntegrationWithHandlers:
             headers=auth_headers,
         )
         assert response.status_code == 403
+
+    @pytest.mark.parametrize(
+        ("method", "path", "gmail_url"),
+        [
+            pytest.param(
+                "post",
+                "/gmail/v1/users/me/drafts",
+                "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+                id="create",
+            ),
+            pytest.param(
+                "put",
+                "/gmail/v1/users/me/drafts/draft1",
+                "https://gmail.googleapis.com/gmail/v1/users/me/drafts/draft1",
+                id="update",
+            ),
+        ],
+    )
+    def test_draft_confirmation_receives_thread_id(
+        self,
+        client,
+        auth_headers,
+        httpx_mock,
+        config_confirm_all,
+        monkeypatch,
+        method,
+        path,
+        gmail_url,
+    ):
+        """Draft create/update must surface message.threadId to the operator."""
+        captured = {}
+
+        async def fake_confirm(self, request):
+            captured["request"] = request
+            return True
+
+        monkeypatch.setattr(ConfirmationHandler, "confirm", fake_confirm)
+        httpx_mock.add_response(
+            url=gmail_url,
+            json={"id": "draft1", "message": {"id": "m1", "threadId": "t1"}},
+        )
+        response = getattr(client, method)(
+            path,
+            json={"message": {"raw": "dGVzdA==", "threadId": "t1"}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        assert captured["request"].draft_thread_id == "t1"
 
 
 class TestCommandLineArgumentParsing:

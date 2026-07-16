@@ -26,6 +26,7 @@ class PendingRequest:
     labels_to_remove: list[str] | None
     message_sender: str | None
     message_subject: str | None
+    draft_thread_id: str | None
     event_summary: str | None
     event_attendees: list[str] | None
     send_updates: str | None
@@ -47,6 +48,7 @@ def _pending_to_dict(pending: PendingRequest) -> dict:
         "labels_to_remove": pending.labels_to_remove,
         "message_sender": pending.message_sender,
         "message_subject": pending.message_subject,
+        "draft_thread_id": pending.draft_thread_id,
         "event_summary": pending.event_summary,
         "event_attendees": pending.event_attendees,
         "send_updates": pending.send_updates,
@@ -105,6 +107,7 @@ class WebConfirmationQueue:
         labels_to_remove: list[str] | None = None,
         message_sender: str | None = None,
         message_subject: str | None = None,
+        draft_thread_id: str | None = None,
         event_summary: str | None = None,
         event_attendees: list[str] | None = None,
         send_updates: str | None = None,
@@ -133,6 +136,7 @@ class WebConfirmationQueue:
             labels_to_remove=labels_to_remove,
             message_sender=message_sender,
             message_subject=message_subject,
+            draft_thread_id=draft_thread_id,
             event_summary=event_summary,
             event_attendees=event_attendees,
             send_updates=send_updates,

@@ -167,6 +167,9 @@ class TestWebConfirmationQueue:
                 method="POST",
                 path="/calendar/v3/calendars/primary/events",
                 query_params={"sendUpdates": "all"},
+                message_sender="sender@example.com",
+                message_subject="Test Subject",
+                draft_thread_id="t123",
                 event_summary="Test Meeting",
                 event_attendees=["user@example.com"],
                 send_updates="all",
@@ -182,6 +185,9 @@ class TestWebConfirmationQueue:
         assert req["method"] == "POST"
         assert req["path"] == "/calendar/v3/calendars/primary/events"
         assert req["query_params"] == {"sendUpdates": "all"}
+        assert req["message_sender"] == "sender@example.com"
+        assert req["message_subject"] == "Test Subject"
+        assert req["draft_thread_id"] == "t123"
         assert req["event_summary"] == "Test Meeting"
         assert req["event_attendees"] == ["user@example.com"]
         assert req["send_updates"] == "all"

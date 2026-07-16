@@ -34,7 +34,8 @@ USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$|
 
 # Regex for validating message/label IDs - alphanumeric with some special chars
 # Gmail IDs are typically base64-like strings
-RESOURCE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+# \Z (not $) so a trailing newline can't sneak past the pattern
+RESOURCE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+\Z")
 
 
 def validate_user_id(user_id: str) -> str:
@@ -107,6 +108,7 @@ async def handle_confirmation(
     labels_to_remove: list[str] | None = None,
     message_sender: str | None = None,
     message_subject: str | None = None,
+    draft_thread_id: str | None = None,
     operation_type: str | None = None,
 ) -> None:
     """
@@ -124,6 +126,7 @@ async def handle_confirmation(
         labels_to_remove=labels_to_remove,
         message_sender=message_sender,
         message_subject=message_subject,
+        draft_thread_id=draft_thread_id,
         operation_type=operation_type,
     )
 
@@ -585,16 +588,24 @@ async def create_draft(
 ):
     """Create a new draft."""
     user_id = validate_user_id(user_id)
+    if body.message.threadId is not None:
+        validate_resource_id(body.message.threadId, "thread")
     path = f"/gmail/v1/users/{user_id}/drafts"
 
-    await handle_confirmation(request, "POST", path, is_modify=False)
+    await handle_confirmation(
+        request,
+        "POST",
+        path,
+        is_modify=False,
+        draft_thread_id=body.message.threadId,
+    )
 
     client = get_gmail_client()
     try:
         response = await client.request(
             "POST",
             path,
-            json_body=body.model_dump(exclude_none=True),
+            json_body=body.gmail_payload(),
         )
         return await forward_response(response)
     except RuntimeError as e:
@@ -615,16 +626,24 @@ async def update_draft(
     """Update an existing draft."""
     user_id = validate_user_id(user_id)
     draft_id = validate_resource_id(draft_id, "draft")
+    if body.message.threadId is not None:
+        validate_resource_id(body.message.threadId, "thread")
     path = f"/gmail/v1/users/{user_id}/drafts/{draft_id}"
 
-    await handle_confirmation(request, "PUT", path, is_modify=False)
+    await handle_confirmation(
+        request,
+        "PUT",
+        path,
+        is_modify=False,
+        draft_thread_id=body.message.threadId,
+    )
 
     client = get_gmail_client()
     try:
         response = await client.request(
             "PUT",
             path,
-            json_body=body.model_dump(exclude_none=True),
+            json_body=body.gmail_payload(),
         )
         return await forward_response(response)
     except RuntimeError as e:
