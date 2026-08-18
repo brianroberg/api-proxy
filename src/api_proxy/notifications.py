@@ -70,12 +70,33 @@ def reset_notification_state() -> None:
 
 
 def _get_token() -> str | None:
-    """Return the ntfy token, or None (logging the disablement once)."""
+    """
+    Return the ntfy token, or None (logging the disablement once).
+
+    The value is stripped and validated before use: a token that could not
+    legally sit in an Authorization header (embedded whitespace or
+    non-printable/non-ASCII characters - e.g. a trailing newline from an
+    echo-created secret) would make the HTTP layer reject the request with
+    the full header value, token included, embedded in the exception text.
+    Leading/trailing whitespace is forgiven by stripping; anything else
+    disables notifications without ever logging the value itself.
+    """
     global _disabled_logged
-    token = os.environ.get(NTFY_TOKEN_ENV)
+    raw = os.environ.get(NTFY_TOKEN_ENV)
+    token = raw.strip() if raw else ""
     if not token:
         if not _disabled_logged:
             logger.info(f"{NTFY_TOKEN_ENV} not set; approval notifications are disabled")
+            _disabled_logged = True
+        return None
+    if not token.isascii() or not token.isprintable() or " " in token:
+        if not _disabled_logged:
+            # Deliberately does not include the value: it is a secret.
+            logger.warning(
+                f"{NTFY_TOKEN_ENV} contains whitespace or non-printable/non-ASCII "
+                "characters and cannot be sent as an HTTP header; approval "
+                "notifications are disabled"
+            )
             _disabled_logged = True
         return None
     return token
@@ -85,17 +106,20 @@ def _header_safe(value: str) -> str:
     """
     Make a string safe to place in an HTTP header.
 
-    Collapses all whitespace (a newline in an event summary must not become
-    a header injection) and RFC 2047-encodes values that are not Latin-1
-    (ntfy decodes =?UTF-8?B?...?= titles natively).
+    Strips control characters (C0/C1 - h11 rejects headers containing them),
+    collapses all whitespace (a newline in an event summary must not become
+    a header injection), and RFC 2047-encodes any remaining non-ASCII text:
+    httpx encodes header values as ASCII, and ntfy decodes =?UTF-8?B?...?=
+    titles natively.
     """
+    # Drop characters that are neither printable nor collapsible whitespace
+    # (e.g. \x07, \x9c), then collapse whitespace runs to single spaces.
+    value = "".join(ch for ch in value if ch.isprintable() or ch.isspace())
     value = " ".join(value.split())
-    try:
-        value.encode("latin-1")
+    if value.isascii():
         return value
-    except UnicodeEncodeError:
-        encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
-        return f"=?UTF-8?B?{encoded}?="
+    encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return f"=?UTF-8?B?{encoded}?="
 
 
 def _dashboard_url(request_id: str) -> str:
@@ -206,8 +230,15 @@ async def _send(url: str, headers: dict[str, str], body: str) -> None:
             logger.warning(f"ntfy notification rejected: HTTP {response.status_code}")
     except Exception as e:
         # Never let a notification failure surface anywhere near the
-        # approval flow. The exception text never contains the token.
-        logger.warning(f"ntfy notification failed: {type(e).__name__}: {e}")
+        # approval flow - and never let the exception text leak the token:
+        # HTTP-layer errors (h11's "Illegal header value b'...'") embed the
+        # offending header value verbatim, so redact it before logging.
+        auth = headers.get("Authorization", "")
+        secret = auth.removeprefix("Bearer ").strip()
+        message = str(e)
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+        logger.warning(f"ntfy notification failed: {type(e).__name__}: {message}")
 
 
 def _fire_and_forget(coro) -> None:
@@ -217,7 +248,10 @@ def _fire_and_forget(coro) -> None:
         try:
             await coro
         except Exception as e:
-            logger.warning(f"ntfy notification failed: {type(e).__name__}: {e}")
+            # _send handles and redacts its own failures; anything reaching
+            # here is unexpected, so log only the exception type - the text
+            # could embed request headers.
+            logger.warning(f"ntfy notification failed: {type(e).__name__}")
 
     try:
         task = asyncio.get_running_loop().create_task(_safe())

@@ -5,11 +5,17 @@ import logging
 import time
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from api_proxy import notifications
 from api_proxy.config import Config, ConfirmationMode, set_config
 from api_proxy.confirmation import ConfirmationOutcome
+
+# The autouse conftest fixture replaces notifications._send per test; this
+# module-import-time reference keeps the real function reachable for tests
+# that exercise its own error handling.
+from api_proxy.notifications import _send as real_send
 from api_proxy.web_confirmation import PendingRequest, WebConfirmationQueue
 
 
@@ -212,13 +218,38 @@ class TestNotificationPrivacy:
         assert "\n" not in headers["Title"]
         assert "\r" not in headers["Title"]
 
-    def test_non_latin1_title_is_encoded(self, config_web_confirm):
+    def test_non_ascii_title_is_encoded(self, config_web_confirm):
         pending = _pending(event_summary="Café ☕ planning")
 
         headers, _ = notifications.build_pending_notification(pending)
 
-        # Must be encodable as an HTTP header
-        headers["Title"].encode("latin-1")
+        # httpx encodes header values as ASCII; anything beyond must be
+        # RFC 2047-encoded or the send raises and is silently dropped.
+        assert headers["Title"].isascii()
+        httpx.Headers(headers)  # raises UnicodeEncodeError if not ASCII-safe
+
+    def test_latin1_but_non_ascii_title_is_encoded(self, config_web_confirm):
+        """Review finding 3: é is Latin-1, so the old Latin-1 threshold let it
+        through raw and httpx raised UnicodeEncodeError (notification dropped)."""
+        pending = _pending(event_summary="Café planning")
+
+        headers, _ = notifications.build_pending_notification(pending)
+
+        assert headers["Title"].isascii()
+        assert headers["Title"].startswith("=?UTF-8?B?")
+        httpx.Headers(headers)
+
+    def test_control_characters_are_stripped(self, config_web_confirm):
+        """Review finding 3: C0/C1 control chars survived the whitespace
+        collapse and made h11 reject the header (notification dropped)."""
+        pending = _pending(event_summary="Bell\x07 and \x9c control")
+
+        headers, _ = notifications.build_pending_notification(pending)
+
+        title = headers["Title"]
+        assert all(ch.isprintable() for ch in title)
+        assert "Bell and control" in title
+        httpx.Headers(headers)
 
 
 class TestTokenHandling:
@@ -249,6 +280,77 @@ class TestTokenHandling:
 
         blob = body + " ".join(f"{k}: {v}" for k, v in headers.items())
         assert "super-secret-token" not in blob
+
+    async def test_trailing_newline_token_is_stripped(self, config_web_confirm, monkeypatch):
+        """Review finding 4: an echo-created token ends in a newline; sent raw
+        it makes h11 reject the header - and the failure log embedded the full
+        token. The token must be stripped on read and the send succeed."""
+        monkeypatch.setenv("NTFY_TOKEN", "tok-abc\n")
+        send_mock = AsyncMock()
+        monkeypatch.setattr(notifications, "_send", send_mock)
+        notifications.reset_notification_state()
+
+        notifications.notify_request_pending(_pending())
+        await asyncio.sleep(0.05)
+
+        assert send_mock.await_count == 1
+        _, headers, _ = send_mock.await_args.args
+        assert headers["Authorization"] == "Bearer tok-abc"
+        httpx.Headers(headers)  # header-legal after stripping
+        notifications.reset_notification_state()
+
+    async def test_invalid_token_disables_and_never_logs_value(
+        self, config_web_confirm, monkeypatch, caplog
+    ):
+        """A token that can't legally sit in a header disables notifications
+        with a log-once message that never contains the token value."""
+        monkeypatch.setenv("NTFY_TOKEN", "bad\ntoken-value")
+        send_mock = AsyncMock()
+        monkeypatch.setattr(notifications, "_send", send_mock)
+        notifications.reset_notification_state()
+
+        with caplog.at_level(logging.DEBUG):
+            notifications.notify_request_pending(_pending())
+            notifications.notify_request_pending(_pending(id="req-456"))
+            await asyncio.sleep(0.05)
+
+        send_mock.assert_not_awaited()
+        assert "token-value" not in caplog.text
+        disabled_logs = [r for r in caplog.records if "disabled" in r.getMessage()]
+        assert len(disabled_logs) == 1
+        notifications.reset_notification_state()
+
+    async def test_send_exception_text_never_leaks_token(
+        self, config_web_confirm, monkeypatch, caplog
+    ):
+        """Even if the transport raises with the header value embedded (h11's
+        'Illegal header value b...' style), the log must not carry the token."""
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, content=None, headers=None):
+                auth = headers["Authorization"].encode()
+                raise ValueError(f"Illegal header value {auth!r}")
+
+        monkeypatch.setattr(notifications.httpx, "AsyncClient", FakeClient)
+
+        with caplog.at_level(logging.WARNING):
+            await real_send(
+                "https://ntfy.example.com/topic",
+                {"Authorization": "Bearer secret-tok", "Title": "x"},
+                "body",
+            )
+
+        assert "ntfy notification failed" in caplog.text
+        assert "secret-tok" not in caplog.text
 
 
 class TestDescribeRequest:
