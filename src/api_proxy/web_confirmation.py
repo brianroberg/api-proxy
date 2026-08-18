@@ -9,6 +9,7 @@ from collections import deque
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
+from api_proxy import notifications
 from api_proxy.config import get_config
 from api_proxy.confirmation import ConfirmationOutcome
 
@@ -156,6 +157,10 @@ class WebConfirmationQueue:
 
         logger.info(f"Request {request_id} added to web confirmation queue: {method} {path}")
         await self._notify_subscribers("request_added", pending_snapshot)
+        # Tell the operator a request is waiting even when the dashboard is
+        # closed. Fire-and-forget: an ntfy outage can never fail or delay
+        # the approval flow.
+        notifications.notify_request_pending(pending)
 
         try:
             if timeout is not None:
@@ -175,6 +180,9 @@ class WebConfirmationQueue:
                         pass  # Already removed
                 pending_snapshot = self.get_pending_sync()
             await self._notify_subscribers("request_timeout", pending_snapshot)
+            # Follow-up so a stale "approval needed" phone notification is
+            # not acted on after the window has already closed.
+            notifications.notify_request_resolved(pending, ConfirmationOutcome.EXPIRED.value)
             return ConfirmationOutcome.EXPIRED
 
     async def get_pending(self) -> list[dict]:
@@ -184,6 +192,7 @@ class WebConfirmationQueue:
 
     async def approve(self, request_id: str) -> bool:
         """Approve a request. Returns True if found and approved."""
+        resolved = False
         async with self._lock:
             if request_id not in self._by_id:
                 return False
@@ -196,6 +205,7 @@ class WebConfirmationQueue:
 
             if not pending.result_future.done():
                 pending.result_future.set_result(ConfirmationOutcome.APPROVED)
+                resolved = True
                 logger.info(
                     f"Request {request_id} APPROVED via web: {pending.method} {pending.path}"
                 )
@@ -203,10 +213,13 @@ class WebConfirmationQueue:
             pending_snapshot = self.get_pending_sync()
 
         await self._notify_subscribers("request_approved", pending_snapshot)
+        if resolved:
+            notifications.notify_request_resolved(pending, ConfirmationOutcome.APPROVED.value)
         return True
 
     async def reject(self, request_id: str) -> bool:
         """Reject a request. Returns True if found and rejected."""
+        resolved = False
         async with self._lock:
             if request_id not in self._by_id:
                 return False
@@ -219,6 +232,7 @@ class WebConfirmationQueue:
 
             if not pending.result_future.done():
                 pending.result_future.set_result(ConfirmationOutcome.REJECTED)
+                resolved = True
                 logger.info(
                     f"Request {request_id} REJECTED via web: {pending.method} {pending.path}"
                 )
@@ -226,6 +240,8 @@ class WebConfirmationQueue:
             pending_snapshot = self.get_pending_sync()
 
         await self._notify_subscribers("request_rejected", pending_snapshot)
+        if resolved:
+            notifications.notify_request_resolved(pending, ConfirmationOutcome.REJECTED.value)
         return True
 
     def subscribe(self) -> asyncio.Queue:

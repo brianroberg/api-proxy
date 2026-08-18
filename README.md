@@ -877,6 +877,44 @@ AI Agent → HTTP Request
 
 **Note:** The approval UI has no authentication and assumes localhost-only deployment. Do not expose the approval endpoints to untrusted networks.
 
+### Approval Notifications (ntfy)
+
+In web-confirmation mode the proxy can push a phone/desktop notification via
+[ntfy](https://ntfy.sh) whenever a request enters the approval queue, so an
+operator learns about it even when the dashboard isn't open. Without a
+notification, an unseen request simply expires after `--confirmation-timeout`
+(default 5 minutes) and the caller is told it expired.
+
+Notifications are enabled by setting the `NTFY_TOKEN` environment variable
+(the bearer token for the ntfy topic; it is never logged or echoed). When
+`NTFY_TOKEN` is unset, notifications are disabled cleanly (logged once at
+startup of the first request, not per request). The topic URL defaults to
+`https://ntfy.robergb.net/alerts-agent` and can be changed with `--ntfy-url`.
+
+Each queued request sends one high-priority notification containing:
+
+- **Title**: what is being approved (e.g. `Approval needed: Delete event: Team Sync`)
+- **Body**: the method and resource, the exact expiry deadline, and what
+  happens on no action (the request expires; the caller is told it expired,
+  not that it was rejected)
+- **A "Review" action button** deep-linking to the request on the dashboard
+  (`/approval/#<request_id>`). Set `--external-base-url` to the proxy's
+  externally reachable URL so the link works from a phone; it defaults to
+  `http://HOST:PORT`.
+
+When the request is resolved — approved, rejected, or expired — a short
+low-priority follow-up is sent so a stale notification isn't acted on.
+
+Notifications are strictly best-effort: sends are fire-and-forget with a
+short timeout, and an ntfy outage can never fail, block, or delay the
+approval flow. For privacy, notification titles and bodies never contain
+third-party personal data — attendee names/emails and message senders are
+deliberately excluded ("Delete event: <summary>" style only), since ntfy
+messages are cached server-side and mirrored to every subscribed device.
+Console-mode confirmations do not notify: the dashboard the notification
+links to isn't mounted in console mode, and the prompt is already in front
+of the operator at the terminal.
+
 ## Approval UI API Reference
 
 These internal endpoints power the web-based approval UI. They require no authentication (localhost assumption).
@@ -985,7 +1023,9 @@ uv run api-proxy [OPTIONS]
 | `--confirm-modify` | (default) | Require confirmation for modify operations |
 | `--no-confirm` | - | Disable confirmation |
 | `--web-confirm` | - | Use web-based confirmation UI instead of console |
-| `--confirmation-timeout` | `300` | Timeout for confirmation prompts (seconds) |
+| `--confirmation-timeout` | `300` | Timeout for confirmation prompts (seconds). Must stay shorter than every client's mutation timeout — see [Confirmation Timeouts and Client Timeouts](#confirmation-timeouts-and-client-timeouts) |
+| `--ntfy-url` | `https://ntfy.robergb.net/alerts-agent` | ntfy topic URL for approval notifications (sent only in web-confirmation mode with `NTFY_TOKEN` set) |
+| `--external-base-url` | `http://HOST:PORT` | Externally reachable base URL used for the dashboard link in approval notifications |
 | `--reload` | - | Enable auto-reload for development |
 | `--log-file` | - | Write logs to file (in addition to console) |
 
@@ -994,6 +1034,7 @@ uv run api-proxy [OPTIONS]
 | Variable | Description |
 |----------|-------------|
 | `API_KEYS_FILE` | Path to API keys file (alternative to `--api-keys-file`) |
+| `NTFY_TOKEN` | Bearer token for approval notifications via ntfy. Unset disables notifications. Never logged or echoed |
 
 ## Development
 

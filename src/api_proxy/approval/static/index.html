@@ -107,6 +107,12 @@
             }
         }
 
+        /* Deep-linked card (/approval/#<request_id>, used by ntfy notifications) */
+        .request-card.deep-linked {
+            outline: 2px solid #f59e0b;
+            outline-offset: 2px;
+        }
+
         .request-card.method-GET { border-left-color: #17a2b8; }
         .request-card.method-POST { border-left-color: #28a745; }
         .request-card.method-PUT { border-left-color: #fd7e14; }
@@ -574,6 +580,18 @@
             pending.forEach(function(request, index) {
                 container.appendChild(createRequestCard(request, index));
             });
+
+            // Deep link: /approval/#<request_id> (from ntfy notifications)
+            // scrolls to and highlights that request if it is still pending.
+            const targetId = decodeURIComponent(window.location.hash.slice(1));
+            if (targetId) {
+                const target = container.querySelector(
+                    '[data-request-id="' + CSS.escape(targetId) + '"]');
+                if (target) {
+                    target.classList.add('deep-linked');
+                    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }
         }
 
         function updateConnectionStatus(connected) {
