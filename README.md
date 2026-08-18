@@ -8,7 +8,7 @@ The proxy currently supports **Gmail** and **Google Calendar** APIs:
 
 - **Gmail**: Allows read operations, label modifications, and draft management but **blocks all email sending capabilities**. This is necessary because Gmail's OAuth scopes don't provide fine-grained control: the `gmail.modify` scope (required for label changes) also grants send permission. The proxy provides the missing capability boundary.
 
-- **Calendar**: Allows full event management (create, read, update, delete) with optional human confirmation for operations that send invitations to attendees.
+- **Calendar**: Allows full event management (create, read, update, delete). Every event mutation — create, update, patch, delete, and RSVP — requires human confirmation when confirmation is enabled (the default `--confirm-modify` mode); reads never do. Operations that would send invitations to attendees are additionally highlighted in the confirmation prompt.
 
 ## Architecture
 
@@ -576,7 +576,11 @@ curl -X GET "http://localhost:8000/calendar/v3/calendars/primary/events/abc123de
 
 `POST /calendar/v3/calendars/{calendarId}/events`
 
-Create a new event in a calendar.
+Create a new event in a calendar. Like every event mutation, this requires
+operator confirmation when the proxy runs in `--confirm-modify` (default) or
+`--confirm-all` mode, regardless of `sendUpdates`. When `sendUpdates` is
+`all` or `externalOnly` the confirmation prompt additionally flags that
+invitations would be sent.
 
 **Query Parameters:**
 - `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
@@ -613,7 +617,9 @@ curl -X POST "http://localhost:8000/calendar/v3/calendars/primary/events" \
 
 `PUT /calendar/v3/calendars/{calendarId}/events/{eventId}`
 
-Replace an event entirely.
+Replace an event entirely. Requires operator confirmation in
+`--confirm-modify` (default) and `--confirm-all` modes, regardless of
+`sendUpdates`.
 
 **Query Parameters:**
 - `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
@@ -631,7 +637,9 @@ curl -X PUT "http://localhost:8000/calendar/v3/calendars/primary/events/abc123" 
 
 `PATCH /calendar/v3/calendars/{calendarId}/events/{eventId}`
 
-Partially update an event.
+Partially update an event. Requires operator confirmation in
+`--confirm-modify` (default) and `--confirm-all` modes, regardless of
+`sendUpdates`.
 
 **Query Parameters:**
 - `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
