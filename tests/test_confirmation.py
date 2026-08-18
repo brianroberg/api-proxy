@@ -8,6 +8,7 @@ import pytest
 from api_proxy.config import Config, ConfirmationMode, set_config
 from api_proxy.confirmation import (
     ConfirmationHandler,
+    ConfirmationOutcome,
     ConfirmationRequest,
     requires_confirmation,
 )
@@ -70,8 +71,8 @@ class TestConfirmationPrompt:
     """Test confirmation prompt handling."""
 
     @pytest.mark.asyncio
-    async def test_approved_request_returns_true(self, config_confirm_all):
-        """Approved requests (y or Y) should return True."""
+    async def test_approved_request_returns_approved(self, config_confirm_all):
+        """Approved requests (y or Y) should return APPROVED."""
         handler = ConfirmationHandler()
         request = ConfirmationRequest(
             method="POST",
@@ -84,11 +85,11 @@ class TestConfirmationPrompt:
                 with patch("asyncio.to_thread", return_value="y"):
                     result = await handler.confirm(request)
 
-        assert result is True
+        assert result is ConfirmationOutcome.APPROVED
 
     @pytest.mark.asyncio
     async def test_approved_request_uppercase_y(self, config_confirm_all):
-        """Approved requests with uppercase Y should return True."""
+        """Approved requests with uppercase Y should return APPROVED."""
         handler = ConfirmationHandler()
         request = ConfirmationRequest(
             method="POST",
@@ -99,11 +100,11 @@ class TestConfirmationPrompt:
             with patch("asyncio.to_thread", return_value="Y"):
                 result = await handler.confirm(request)
 
-        assert result is True
+        assert result is ConfirmationOutcome.APPROVED
 
     @pytest.mark.asyncio
-    async def test_rejected_request_n_returns_false(self, config_confirm_all):
-        """Rejected requests (n) should return False."""
+    async def test_rejected_request_n_returns_rejected(self, config_confirm_all):
+        """Rejected requests (n) should return REJECTED, not EXPIRED."""
         handler = ConfirmationHandler()
         request = ConfirmationRequest(
             method="POST",
@@ -114,11 +115,11 @@ class TestConfirmationPrompt:
             with patch("asyncio.to_thread", return_value="n"):
                 result = await handler.confirm(request)
 
-        assert result is False
+        assert result is ConfirmationOutcome.REJECTED
 
     @pytest.mark.asyncio
-    async def test_rejected_request_empty_returns_false(self, config_confirm_all):
-        """Empty response should return False (default is no)."""
+    async def test_rejected_request_empty_returns_rejected(self, config_confirm_all):
+        """Empty response should return REJECTED (default is no)."""
         handler = ConfirmationHandler()
         request = ConfirmationRequest(
             method="POST",
@@ -129,7 +130,7 @@ class TestConfirmationPrompt:
             with patch("asyncio.to_thread", return_value=""):
                 result = await handler.confirm(request)
 
-        assert result is False
+        assert result is ConfirmationOutcome.REJECTED
 
     @pytest.mark.asyncio
     async def test_prompt_includes_method_and_path(self, config_confirm_all):
@@ -183,8 +184,8 @@ class TestConfirmationTimeout:
     """Test confirmation timeout behavior."""
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_false(self, temp_dir, api_keys_file, token_file):
-        """Timeout should return False."""
+    async def test_timeout_returns_expired(self, temp_dir, api_keys_file, token_file):
+        """A confirmation nobody answers should return EXPIRED, not REJECTED."""
         config = Config(
             api_keys_file=api_keys_file,
             token_file=token_file,
@@ -208,7 +209,7 @@ class TestConfirmationTimeout:
             with patch("asyncio.to_thread", side_effect=slow_input):
                 result = await handler.confirm(request)
 
-        assert result is False
+        assert result is ConfirmationOutcome.EXPIRED
 
 
 class TestIntegrationWithHandlers:
@@ -278,7 +279,7 @@ class TestIntegrationWithHandlers:
 
         async def fake_confirm(self, request):
             captured["request"] = request
-            return True
+            return ConfirmationOutcome.APPROVED
 
         monkeypatch.setattr(ConfirmationHandler, "confirm", fake_confirm)
         httpx_mock.add_response(
@@ -292,6 +293,45 @@ class TestIntegrationWithHandlers:
         )
         assert response.status_code == 200
         assert captured["request"].draft_thread_id == "t1"
+
+
+class TestConfirmationOutcomeResponses:
+    """Rejection and expiry must produce distinguishable 403 details (issue #8)."""
+
+    @staticmethod
+    def _confirm_returning(monkeypatch, outcome):
+        async def fake_confirm(self, request):
+            return outcome
+
+        monkeypatch.setattr(ConfirmationHandler, "confirm", fake_confirm)
+
+    def test_gmail_rejection_keeps_forbidden_detail(
+        self, client, auth_headers, config_confirm_all, monkeypatch
+    ):
+        """Genuine rejection keeps the exact pre-existing 403 detail."""
+        self._confirm_returning(monkeypatch, ConfirmationOutcome.REJECTED)
+
+        response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "error": "forbidden",
+            "message": "Request rejected by operator",
+        }
+
+    def test_gmail_expiry_returns_confirmation_expired(
+        self, client, auth_headers, config_confirm_all, monkeypatch
+    ):
+        """An unanswered confirmation returns confirmation_expired, not forbidden."""
+        self._confirm_returning(monkeypatch, ConfirmationOutcome.EXPIRED)
+
+        response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "error": "confirmation_expired",
+            "message": "Confirmation request expired before an operator responded",
+        }
 
 
 class TestCommandLineArgumentParsing:

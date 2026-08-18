@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from api_proxy.auth import verify_api_key
 from api_proxy.confirmation import (
+    ConfirmationOutcome,
     ConfirmationRequest,
     get_confirmation_handler,
     requires_confirmation,
@@ -112,7 +113,8 @@ async def handle_confirmation(
     operation_type: str | None = None,
 ) -> None:
     """
-    Handle confirmation if required. Raises HTTPException if rejected.
+    Handle confirmation if required. Raises HTTPException if rejected or if
+    the confirmation window expired with no operator response.
     """
     if not requires_confirmation(method, is_modify, operation_type):
         return
@@ -130,14 +132,28 @@ async def handle_confirmation(
         operation_type=operation_type,
     )
 
-    approved = await handler.confirm(confirmation_request)
-    if not approved:
-        key_name = getattr(request.state, "api_key_name", "unknown")
-        logger.warning(f"Request rejected by operator: {method} {path} (key: {key_name})")
+    outcome = await handler.confirm(confirmation_request)
+    if outcome is ConfirmationOutcome.APPROVED:
+        return
+
+    key_name = getattr(request.state, "api_key_name", "unknown")
+    if outcome is ConfirmationOutcome.EXPIRED:
+        # Nobody ever saw the prompt: distinguishable from a rejection so
+        # callers know a retry (after notifying the operator) is reasonable.
+        logger.warning(f"Confirmation expired unanswered: {method} {path} (key: {key_name})")
         raise HTTPException(
             status_code=403,
-            detail={"error": "forbidden", "message": "Request rejected by operator"},
+            detail={
+                "error": "confirmation_expired",
+                "message": "Confirmation request expired before an operator responded",
+            },
         )
+
+    logger.warning(f"Request rejected by operator: {method} {path} (key: {key_name})")
+    raise HTTPException(
+        status_code=403,
+        detail={"error": "forbidden", "message": "Request rejected by operator"},
+    )
 
 
 async def _resolve_label_names(user_id: str, label_ids: list[str]) -> list[str]:
@@ -400,7 +416,7 @@ async def modify_message(
         all_ids = (body.addLabelIds or []) + (body.removeLabelIds or [])
         if all_ids:
             resolved = await _resolve_label_names(user_id, all_ids)
-            id_to_name = dict(zip(all_ids, resolved, strict=False))
+            id_to_name = dict(zip(all_ids, resolved, strict=True))
             add_names = [id_to_name[lid] for lid in body.addLabelIds] if body.addLabelIds else None
             remove_names = (
                 [id_to_name[lid] for lid in body.removeLabelIds] if body.removeLabelIds else None

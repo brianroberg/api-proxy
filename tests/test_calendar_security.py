@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from api_proxy.confirmation import ConfirmationOutcome
+
 
 class TestCalendarAllowlistApproach:
     """Verify Calendar operations follow allowlist approach."""
@@ -390,6 +392,67 @@ class TestBareMutationConfirmation:
             )
 
         assert response.status_code == 403
+        mock_client.request.assert_not_awaited()
+
+
+class TestCalendarConfirmationOutcomes:
+    """Rejection and expiry produce distinguishable 403 details (issue #8)."""
+
+    @staticmethod
+    def _mocks(mock_get_client, mock_get_handler, outcome):
+        mock_client = AsyncMock()
+        mock_get_client.return_value = mock_client
+        mock_handler = AsyncMock()
+        mock_handler.confirm = AsyncMock(return_value=outcome)
+        mock_get_handler.return_value = mock_handler
+        return mock_client
+
+    def test_expired_confirmation_returns_confirmation_expired(
+        self, client, auth_headers, config_confirm_modify
+    ):
+        """An unanswered confirmation returns confirmation_expired, and no write happens."""
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client = self._mocks(
+                mock_get_client, mock_get_handler, ConfirmationOutcome.EXPIRED
+            )
+            response = client.post(
+                "/calendar/v3/calendars/primary/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "error": "confirmation_expired",
+            "message": "Confirmation request expired before an operator responded",
+        }
+        mock_client.request.assert_not_awaited()
+
+    def test_rejected_confirmation_keeps_forbidden_detail(
+        self, client, auth_headers, config_confirm_modify
+    ):
+        """Genuine rejection keeps the exact pre-existing 403 detail."""
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client = self._mocks(
+                mock_get_client, mock_get_handler, ConfirmationOutcome.REJECTED
+            )
+            response = client.post(
+                "/calendar/v3/calendars/primary/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "error": "forbidden",
+            "message": "Request rejected by operator",
+        }
         mock_client.request.assert_not_awaited()
 
 

@@ -27,6 +27,14 @@ class Config:
 
     # Confirmation settings
     confirmation_mode: ConfirmationMode = ConfirmationMode.MODIFY
+    # Cross-repo invariant: this window must stay strictly shorter than every
+    # client's mutation timeout (calendar-agent calls mutating routes with
+    # PROXY_CONFIRM_TIMEOUT, default 330s), otherwise the client gives up
+    # before the operator decides and the outcome — including an approved
+    # mutation that then executes — is undeliverable. Raising
+    # confirmation_timeout therefore requires raising every client's mutation
+    # timeout FIRST. Nothing enforces this across repos; see README
+    # "Confirmation timeouts and client timeouts".
     confirmation_timeout: float | None = 300.0  # 5 minutes, None for no timeout
     web_confirmation: bool = False  # Use web-based confirmation instead of console
 

@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from api_proxy.config import Config, ConfirmationMode, set_config
+from api_proxy.confirmation import ConfirmationOutcome
 from api_proxy.web_confirmation import (
     WebConfirmationQueue,
     get_web_queue,
@@ -68,7 +69,7 @@ class TestWebConfirmationQueue:
 
         # Wait for request to complete
         result = await task
-        assert result is True
+        assert result is ConfirmationOutcome.APPROVED
 
     @pytest.mark.asyncio
     async def test_add_and_reject_request(self, web_queue, config_web_confirm):
@@ -93,18 +94,18 @@ class TestWebConfirmationQueue:
 
         # Wait for request to complete
         result = await task
-        assert result is False
+        assert result is ConfirmationOutcome.REJECTED
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_false(self, web_queue, config_web_confirm):
-        """Request should return False if it times out."""
+    async def test_timeout_returns_expired(self, web_queue, config_web_confirm):
+        """Request should return EXPIRED (not REJECTED) if it times out."""
         result = await web_queue.add_request(
             method="POST",
             path="/gmail/v1/users/me/messages/123/modify",
         )
 
-        # Should timeout and return False
-        assert result is False
+        # Should time out and report expiry
+        assert result is ConfirmationOutcome.EXPIRED
 
         # Queue should be empty after timeout
         pending = await web_queue.get_pending()

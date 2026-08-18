@@ -10,6 +10,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 from api_proxy.config import get_config
+from api_proxy.confirmation import ConfirmationOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +115,12 @@ class WebConfirmationQueue:
         event_start: str | None = None,
         event_end: str | None = None,
         rsvp_response: str | None = None,
-    ) -> bool:
+    ) -> ConfirmationOutcome:
         """
-        Add request to queue and wait for approval.
+        Add request to queue and wait for the operator's decision.
 
-        Returns True if approved, False if rejected or timed out.
+        Returns APPROVED or REJECTED if an operator acted on the request,
+        and EXPIRED if nobody responded within the confirmation timeout.
         """
         config = get_config()
         timeout = config.confirmation_timeout
@@ -162,7 +164,7 @@ class WebConfirmationQueue:
                 result = await future
             return result
         except TimeoutError:
-            logger.info(f"Request {request_id} timed out")
+            logger.info(f"Request {request_id} expired with no operator response")
             # Remove from queue on timeout
             async with self._lock:
                 if request_id in self._by_id:
@@ -173,7 +175,7 @@ class WebConfirmationQueue:
                         pass  # Already removed
                 pending_snapshot = self.get_pending_sync()
             await self._notify_subscribers("request_timeout", pending_snapshot)
-            return False
+            return ConfirmationOutcome.EXPIRED
 
     async def get_pending(self) -> list[dict]:
         """Get list of pending requests."""
@@ -193,7 +195,7 @@ class WebConfirmationQueue:
                 pass  # Already removed
 
             if not pending.result_future.done():
-                pending.result_future.set_result(True)
+                pending.result_future.set_result(ConfirmationOutcome.APPROVED)
                 logger.info(
                     f"Request {request_id} APPROVED via web: {pending.method} {pending.path}"
                 )
@@ -216,7 +218,7 @@ class WebConfirmationQueue:
                 pass  # Already removed
 
             if not pending.result_future.done():
-                pending.result_future.set_result(False)
+                pending.result_future.set_result(ConfirmationOutcome.REJECTED)
                 logger.info(
                     f"Request {request_id} REJECTED via web: {pending.method} {pending.path}"
                 )

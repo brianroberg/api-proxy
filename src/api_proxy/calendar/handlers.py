@@ -14,6 +14,7 @@ from api_proxy.auth import verify_api_key
 from api_proxy.calendar.client import get_calendar_client
 from api_proxy.calendar.models import EventRequest, RespondRequest
 from api_proxy.confirmation import (
+    ConfirmationOutcome,
     ConfirmationRequest,
     get_confirmation_handler,
     requires_confirmation,
@@ -185,7 +186,8 @@ async def handle_confirmation(
     rsvp_response: str | None = None,
 ) -> None:
     """
-    Handle confirmation if required. Raises HTTPException if rejected.
+    Handle confirmation if required. Raises HTTPException if rejected or if
+    the confirmation window expired with no operator response.
     """
     if not requires_confirmation(method, is_modify):
         return
@@ -203,14 +205,28 @@ async def handle_confirmation(
         rsvp_response=rsvp_response,
     )
 
-    approved = await handler.confirm(confirmation_request)
-    if not approved:
-        key_name = getattr(request.state, "api_key_name", "unknown")
-        logger.warning(f"Request rejected by operator: {method} {path} (key: {key_name})")
+    outcome = await handler.confirm(confirmation_request)
+    if outcome is ConfirmationOutcome.APPROVED:
+        return
+
+    key_name = getattr(request.state, "api_key_name", "unknown")
+    if outcome is ConfirmationOutcome.EXPIRED:
+        # Nobody ever saw the prompt: distinguishable from a rejection so
+        # callers know a retry (after notifying the operator) is reasonable.
+        logger.warning(f"Confirmation expired unanswered: {method} {path} (key: {key_name})")
         raise HTTPException(
             status_code=403,
-            detail={"error": "forbidden", "message": "Request rejected by operator"},
+            detail={
+                "error": "confirmation_expired",
+                "message": "Confirmation request expired before an operator responded",
+            },
         )
+
+    logger.warning(f"Request rejected by operator: {method} {path} (key: {key_name})")
+    raise HTTPException(
+        status_code=403,
+        detail={"error": "forbidden", "message": "Request rejected by operator"},
+    )
 
 
 def _sends_invitations(send_updates: str | None) -> bool:

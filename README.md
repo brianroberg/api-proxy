@@ -26,7 +26,8 @@ api-proxy (this server)
     ├──► Allowed operations → [Human confirmation if enabled]
     │                              │
     │                              ├── Approved → Forward to backend API
-    │                              └── Rejected → 403 Forbidden
+    │                              ├── Rejected → 403 Forbidden
+    │                              └── Expired (nobody responded) → 403 confirmation_expired
     │
     │ Backend APIs (with credentials)
     ▼
@@ -168,6 +169,7 @@ API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
 | 403 | `auth_error` | API key is disabled |
 | 403 | `forbidden` | Blocked operation (send, drafts, etc.) |
 | 403 | `forbidden` | Confirmation rejected by operator |
+| 403 | `confirmation_expired` | Confirmation request expired before an operator responded |
 | 422 | `proxy_error` | Request validation failed (malformed JSON, missing fields) |
 | 502 | `backend_error` | Backend unreachable or authentication failed |
 | 4xx/5xx | `backend_error` | Error passed through from Gmail API |
@@ -807,13 +809,34 @@ Allow this request? [y/N]:
 ```
 
 - Enter `y` or `Y` to approve and forward the request
-- Enter `n`, `N`, or just press Enter to reject (returns 403 to caller)
+- Enter `n`, `N`, or just press Enter to reject (returns 403 `forbidden`,
+  "Request rejected by operator", to the caller)
+- If nobody responds within the confirmation timeout, the request **expires**
+  (returns 403 with `{"error": "confirmation_expired", "message":
+  "Confirmation request expired before an operator responded"}`). An expiry
+  is deliberately distinguishable from a rejection: a rejection means a human
+  said no (don't retry), an expiry means nobody ever saw the prompt
+  (retrying later is reasonable).
 
 ### Important Notes
 
 - Blocked operations are **NEVER** subject to confirmation—they are always rejected
 - Confirmation prompts are synchronous—only one pending at a time
 - Default timeout is 5 minutes (configurable via `--confirmation-timeout`)
+
+### Confirmation Timeouts and Client Timeouts
+
+The confirmation window must stay **strictly shorter** than the mutation
+timeout of every client calling the proxy. If a client gives up before the
+operator decides, the outcome becomes undeliverable — worst case, the
+operator approves after the client has disconnected and the mutation
+executes unobserved. calendar-agent calls all mutating routes with a
+client-side timeout of `PROXY_CONFIRM_TIMEOUT` (default **330s**), chosen to
+exceed this server's `confirmation_timeout` (default **300s**). Nothing
+enforces that inequality across repositories, so **raising
+`--confirmation-timeout` requires raising every client's mutation timeout
+first** (see also the comment on `confirmation_timeout` in
+`src/api_proxy/config.py`).
 
 ### Web-Based Confirmation
 
