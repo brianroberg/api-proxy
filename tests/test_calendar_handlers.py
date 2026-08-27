@@ -14,9 +14,7 @@ class TestListCalendars:
         """Should return 200 OK for valid request."""
         mock_response = mock_calendar_response(200, mock_calendar_list)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -34,9 +32,7 @@ class TestListCalendars:
         """Should return the calendar list from the API."""
         mock_response = mock_calendar_response(200, mock_calendar_list)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -60,9 +56,7 @@ class TestGetCalendar:
         """Should return 200 OK for valid request."""
         mock_response = mock_calendar_response(200, mock_calendar)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -80,9 +74,7 @@ class TestGetCalendar:
         """Should return the calendar metadata."""
         mock_response = mock_calendar_response(200, mock_calendar)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -106,9 +98,7 @@ class TestListEvents:
         """Should return 200 OK for valid request."""
         mock_response = mock_calendar_response(200, mock_events_list)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -126,9 +116,7 @@ class TestListEvents:
         """Should forward query parameters to Calendar API."""
         mock_response = mock_calendar_response(200, mock_events_list)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -155,9 +143,7 @@ class TestListEvents:
         """Should return the events list."""
         mock_response = mock_calendar_response(200, mock_events_list)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -181,9 +167,7 @@ class TestGetEvent:
         """Should return 200 OK for valid request."""
         mock_response = mock_calendar_response(200, mock_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -195,15 +179,11 @@ class TestGetEvent:
 
         assert response.status_code == 200
 
-    def test_returns_event_response(
-        self, client, auth_headers, mock_calendar_response, mock_event
-    ):
+    def test_returns_event_response(self, client, auth_headers, mock_calendar_response, mock_event):
         """Should return the event details."""
         mock_response = mock_calendar_response(200, mock_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -228,9 +208,7 @@ class TestCreateEvent:
         """Should return 200 OK for valid request."""
         mock_response = mock_calendar_response(200, mock_created_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -253,9 +231,7 @@ class TestCreateEvent:
         """Should forward request body to Calendar API."""
         mock_response = mock_calendar_response(200, mock_created_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -281,9 +257,7 @@ class TestCreateEvent:
         """Should return the created event."""
         mock_response = mock_calendar_response(200, mock_created_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -312,9 +286,7 @@ class TestUpdateEvent:
         """Should return 200 OK for valid request."""
         mock_response = mock_calendar_response(200, mock_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -341,9 +313,7 @@ class TestPatchEvent:
         """Should return 200 OK for valid request."""
         mock_response = mock_calendar_response(200, mock_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -366,9 +336,7 @@ class TestDeleteEvent:
         """Should return 204 No Content for valid request."""
         mock_response = mock_calendar_response(204, None)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -403,9 +371,7 @@ class TestDeleteEvent:
 class TestCalendarApiErrors:
     """Tests for Calendar API error handling."""
 
-    def test_forwards_404_error(
-        self, client, auth_headers, mock_calendar_response
-    ):
+    def test_forwards_404_error(self, client, auth_headers, mock_calendar_response):
         """Should forward 404 errors from Calendar API."""
         error_response = {
             "error": {
@@ -415,9 +381,7 @@ class TestCalendarApiErrors:
         }
         mock_response = mock_calendar_response(404, error_response)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -431,9 +395,7 @@ class TestCalendarApiErrors:
         data = response.json()
         assert data["error"] == "backend_error"
 
-    def test_forwards_403_error(
-        self, client, auth_headers, mock_calendar_response
-    ):
+    def test_forwards_403_error(self, client, auth_headers, mock_calendar_response):
         """Should forward 403 errors from Calendar API."""
         error_response = {
             "error": {
@@ -443,9 +405,7 @@ class TestCalendarApiErrors:
         }
         mock_response = mock_calendar_response(403, error_response)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -469,9 +429,7 @@ class TestCalendarIdValidation:
         """Should accept 'primary' as calendarId."""
         mock_response = mock_calendar_response(200, mock_calendar)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -489,9 +447,7 @@ class TestCalendarIdValidation:
         """Should accept email address as calendarId."""
         mock_response = mock_calendar_response(200, mock_calendar)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client

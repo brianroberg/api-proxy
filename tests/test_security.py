@@ -1,7 +1,6 @@
 """Security tests - verify blocked operations are actually blocked."""
 
 
-
 class TestBlockedOperations:
     """Test that blocked operations return 403 Forbidden."""
 

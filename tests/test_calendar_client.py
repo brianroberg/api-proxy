@@ -1,13 +1,12 @@
 """Tests for Google Calendar API client."""
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import Response
 
-from api_proxy.calendar.client import CalendarClient, SCOPES
+from api_proxy.calendar.client import SCOPES, CalendarClient
 
 
 class TestTokenLoading:
@@ -77,7 +76,7 @@ class TestTokenRefresh:
 
         with patch.object(client, "_load_credentials", return_value=mock_creds):
             # Get credentials should trigger refresh
-            creds = client._get_credentials()
+            client._get_credentials()
             mock_creds.refresh.assert_called_once()
 
     @pytest.mark.asyncio
@@ -110,12 +109,15 @@ class TestTokenRefresh:
         response_200.json.return_value = {"events": []}
         mock_http.request.side_effect = [response_401, response_200]
 
-        with patch.object(client, "_get_credentials", return_value=mock_creds), \
-             patch.object(client, "get_http_client", return_value=mock_http), \
-             patch.object(client, "_force_refresh_credentials", return_value=mock_creds), \
-             patch("api_proxy.calendar.client.get_config") as mock_config:
-
-            mock_config.return_value.calendar_api_base_url = "https://www.googleapis.com/calendar/v3"
+        with (
+            patch.object(client, "_get_credentials", return_value=mock_creds),
+            patch.object(client, "get_http_client", return_value=mock_http),
+            patch.object(client, "_force_refresh_credentials", return_value=mock_creds),
+            patch("api_proxy.calendar.client.get_config") as mock_config,
+        ):
+            mock_config.return_value.calendar_api_base_url = (
+                "https://www.googleapis.com/calendar/v3"
+            )
 
             response = await client.request("GET", "/calendars/primary/events")
 
@@ -149,12 +151,15 @@ class TestTokenRefresh:
         response_401.status_code = 401
         mock_http.request.return_value = response_401
 
-        with patch.object(client, "_get_credentials", return_value=mock_creds), \
-             patch.object(client, "get_http_client", return_value=mock_http), \
-             patch.object(client, "_force_refresh_credentials", return_value=None), \
-             patch("api_proxy.calendar.client.get_config") as mock_config:
-
-            mock_config.return_value.calendar_api_base_url = "https://www.googleapis.com/calendar/v3"
+        with (
+            patch.object(client, "_get_credentials", return_value=mock_creds),
+            patch.object(client, "get_http_client", return_value=mock_http),
+            patch.object(client, "_force_refresh_credentials", return_value=None),
+            patch("api_proxy.calendar.client.get_config") as mock_config,
+        ):
+            mock_config.return_value.calendar_api_base_url = (
+                "https://www.googleapis.com/calendar/v3"
+            )
 
             response = await client.request("GET", "/calendars/primary/events")
 
@@ -188,17 +193,23 @@ class TestApiCallConstruction:
         mock_response.status_code = 200
         mock_http.request.return_value = mock_response
 
-        with patch.object(client, "_get_credentials", return_value=mock_creds), \
-             patch.object(client, "get_http_client", return_value=mock_http), \
-             patch("api_proxy.calendar.client.get_config") as mock_config:
-
-            mock_config.return_value.calendar_api_base_url = "https://www.googleapis.com/calendar/v3"
+        with (
+            patch.object(client, "_get_credentials", return_value=mock_creds),
+            patch.object(client, "get_http_client", return_value=mock_http),
+            patch("api_proxy.calendar.client.get_config") as mock_config,
+        ):
+            mock_config.return_value.calendar_api_base_url = (
+                "https://www.googleapis.com/calendar/v3"
+            )
 
             await client.request("GET", "/calendars/primary/events")
 
             # Verify URL construction
             call_kwargs = mock_http.request.call_args[1]
-            assert call_kwargs["url"] == "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+            assert (
+                call_kwargs["url"]
+                == "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+            )
 
     @pytest.mark.asyncio
     async def test_includes_authorization_header(self, temp_dir):
@@ -224,11 +235,14 @@ class TestApiCallConstruction:
         mock_response.status_code = 200
         mock_http.request.return_value = mock_response
 
-        with patch.object(client, "_get_credentials", return_value=mock_creds), \
-             patch.object(client, "get_http_client", return_value=mock_http), \
-             patch("api_proxy.calendar.client.get_config") as mock_config:
-
-            mock_config.return_value.calendar_api_base_url = "https://www.googleapis.com/calendar/v3"
+        with (
+            patch.object(client, "_get_credentials", return_value=mock_creds),
+            patch.object(client, "get_http_client", return_value=mock_http),
+            patch("api_proxy.calendar.client.get_config") as mock_config,
+        ):
+            mock_config.return_value.calendar_api_base_url = (
+                "https://www.googleapis.com/calendar/v3"
+            )
 
             await client.request("GET", "/calendars/primary")
 

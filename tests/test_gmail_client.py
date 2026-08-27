@@ -217,9 +217,7 @@ class TestApiCallConstruction:
 
                 mock_request.assert_called_once()
                 call_kwargs = mock_request.call_args
-                assert "https://gmail.googleapis.com/gmail/v1/users/me/messages" in str(
-                    call_kwargs
-                )
+                assert "https://gmail.googleapis.com/gmail/v1/users/me/messages" in str(call_kwargs)
 
         await client.close()
 

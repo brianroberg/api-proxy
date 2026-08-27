@@ -6,7 +6,6 @@ import pytest
 
 from api_proxy.config import Config, ConfirmationMode, set_config
 from api_proxy.web_confirmation import (
-    PendingRequest,
     WebConfirmationQueue,
     get_web_queue,
     reset_web_queue,
@@ -41,6 +40,7 @@ class TestWebConfirmationQueue:
     @pytest.mark.asyncio
     async def test_add_and_approve_request(self, web_queue, config_web_confirm):
         """Request should be approved when approve is called."""
+
         # Start the request in background
         async def make_request():
             return await web_queue.add_request(
@@ -73,6 +73,7 @@ class TestWebConfirmationQueue:
     @pytest.mark.asyncio
     async def test_add_and_reject_request(self, web_queue, config_web_confirm):
         """Request should be rejected when reject is called."""
+
         async def make_request():
             return await web_queue.add_request(
                 method="POST",
@@ -112,6 +113,7 @@ class TestWebConfirmationQueue:
     @pytest.mark.asyncio
     async def test_fifo_order(self, web_queue, config_web_confirm):
         """Queue should maintain FIFO order."""
+
         # Add multiple requests
         async def add_request(path: str):
             return await web_queue.add_request(method="GET", path=path)
@@ -162,6 +164,7 @@ class TestWebConfirmationQueue:
     @pytest.mark.asyncio
     async def test_request_includes_all_fields(self, web_queue, config_web_confirm):
         """All request fields should be captured in pending request."""
+
         async def make_request():
             return await web_queue.add_request(
                 method="POST",

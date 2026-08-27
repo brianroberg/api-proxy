@@ -78,7 +78,9 @@ class APIKeyManager:
         if not name or len(name) > 64:
             raise ValueError("Name must be between 1 and 64 characters")
         if not name.replace("-", "").replace("_", "").isalnum():
-            raise ValueError("Name must contain only alphanumeric characters, hyphens, and underscores")
+            raise ValueError(
+                "Name must contain only alphanumeric characters, hyphens, and underscores"
+            )
 
         key = self.generate_key()
         data["keys"][key] = {
@@ -146,13 +148,15 @@ class APIKeyManager:
         data = self._load_keys()
         result = []
         for key, key_data in data["keys"].items():
-            result.append({
-                "name": key_data.get("name", "unknown"),
-                "created_at": key_data.get("created_at"),
-                "last_used_at": key_data.get("last_used_at"),
-                "enabled": key_data.get("enabled", True),
-                "key_suffix": key[-4:],  # Last 4 chars for identification
-            })
+            result.append(
+                {
+                    "name": key_data.get("name", "unknown"),
+                    "created_at": key_data.get("created_at"),
+                    "last_used_at": key_data.get("last_used_at"),
+                    "enabled": key_data.get("enabled", True),
+                    "key_suffix": key[-4:],  # Last 4 chars for identification
+                }
+            )
         return result
 
 
