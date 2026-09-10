@@ -1035,6 +1035,7 @@ uv run api-proxy [OPTIONS]
 |----------|-------------|
 | `API_KEYS_FILE` | Path to API keys file (alternative to `--api-keys-file`) |
 | `NTFY_TOKEN` | Bearer token for approval notifications via ntfy. Unset disables notifications. Never logged or echoed |
+| `EXTERNAL_BASE_URL` | Externally reachable base URL for the dashboard deep link in approval notifications (alternative to `--external-base-url`; the flag wins when both are set). Blank counts as unset |
 
 ## Development
 
