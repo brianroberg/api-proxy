@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -384,9 +385,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--external-base-url",
-        default=None,
+        default=os.environ.get("EXTERNAL_BASE_URL", "").strip() or None,
         help="Externally reachable base URL of this proxy, used for the "
-        "dashboard link in approval notifications (default: http://HOST:PORT)",
+        "dashboard link in approval notifications (default: the EXTERNAL_BASE_URL "
+        "environment variable, else http://HOST:PORT)",
     )
 
     parser.add_argument(
