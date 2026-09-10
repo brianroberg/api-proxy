@@ -9,7 +9,9 @@ from collections import deque
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
+from api_proxy import notifications
 from api_proxy.config import get_config
+from api_proxy.confirmation import ConfirmationOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +116,12 @@ class WebConfirmationQueue:
         event_start: str | None = None,
         event_end: str | None = None,
         rsvp_response: str | None = None,
-    ) -> bool:
+    ) -> ConfirmationOutcome:
         """
-        Add request to queue and wait for approval.
+        Add request to queue and wait for the operator's decision.
 
-        Returns True if approved, False if rejected or timed out.
+        Returns APPROVED or REJECTED if an operator acted on the request,
+        and EXPIRED if nobody responded within the confirmation timeout.
         """
         config = get_config()
         timeout = config.confirmation_timeout
@@ -154,6 +157,10 @@ class WebConfirmationQueue:
 
         logger.info(f"Request {request_id} added to web confirmation queue: {method} {path}")
         await self._notify_subscribers("request_added", pending_snapshot)
+        # Tell the operator a request is waiting even when the dashboard is
+        # closed. Fire-and-forget: an ntfy outage can never fail or delay
+        # the approval flow.
+        notifications.notify_request_pending(pending)
 
         try:
             if timeout is not None:
@@ -162,8 +169,9 @@ class WebConfirmationQueue:
                 result = await future
             return result
         except TimeoutError:
-            logger.info(f"Request {request_id} timed out")
-            # Remove from queue on timeout
+            # Remove our entry from the queue whether this is a genuine
+            # expiry or the lost-decision race recovered below (in the race,
+            # approve()/reject() already removed it, making this a no-op).
             async with self._lock:
                 if request_id in self._by_id:
                     pending = self._by_id.pop(request_id)
@@ -172,8 +180,43 @@ class WebConfirmationQueue:
                     except ValueError:
                         pass  # Already removed
                 pending_snapshot = self.get_pending_sync()
+
+            # On Python >= 3.12, asyncio.wait_for no longer recovers a done
+            # future on timeout: when the operator's decision and the timer
+            # land in the same event-loop batch, set_result() succeeds and
+            # wait_for still raises TimeoutError. A decision recorded on the
+            # future must win over the timer - otherwise a fully-approved
+            # mutation is discarded as expired and never forwarded (and both
+            # "approved" and "expired" follow-ups would fire).
+            recovered = self._recover_operator_decision(future)
+            if recovered is not None:
+                logger.info(
+                    f"Request {request_id} was decided ({recovered.value}) in the same "
+                    "event-loop batch as its timeout; honoring the operator's decision"
+                )
+                return recovered
+
+            logger.info(f"Request {request_id} expired with no operator response")
             await self._notify_subscribers("request_timeout", pending_snapshot)
-            return False
+            # Follow-up so a stale "approval needed" phone notification is
+            # not acted on after the window has already closed.
+            notifications.notify_request_resolved(pending, ConfirmationOutcome.EXPIRED.value)
+            return ConfirmationOutcome.EXPIRED
+
+    @staticmethod
+    def _recover_operator_decision(future: asyncio.Future) -> ConfirmationOutcome | None:
+        """
+        Return the decision recorded on the result future, if any.
+
+        Used after a TimeoutError from asyncio.wait_for: on Python >= 3.12 a
+        future that completed in the same event-loop batch as the timer is
+        not recovered by wait_for itself, so a recorded APPROVED/REJECTED
+        would otherwise be misreported as expiry. A cancelled or still-pending
+        future means no operator ever decided (returns None).
+        """
+        if future.done() and not future.cancelled():
+            return future.result()
+        return None
 
     async def get_pending(self) -> list[dict]:
         """Get list of pending requests."""
@@ -181,7 +224,12 @@ class WebConfirmationQueue:
             return self.get_pending_sync()
 
     async def approve(self, request_id: str) -> bool:
-        """Approve a request. Returns True if found and approved."""
+        """
+        Approve a request. Returns True only if the approval took effect;
+        False if the request is unknown or was already resolved (e.g. its
+        confirmation window expired first).
+        """
+        resolved = False
         async with self._lock:
             if request_id not in self._by_id:
                 return False
@@ -193,18 +241,35 @@ class WebConfirmationQueue:
                 pass  # Already removed
 
             if not pending.result_future.done():
-                pending.result_future.set_result(True)
+                pending.result_future.set_result(ConfirmationOutcome.APPROVED)
+                resolved = True
                 logger.info(
                     f"Request {request_id} APPROVED via web: {pending.method} {pending.path}"
                 )
 
             pending_snapshot = self.get_pending_sync()
 
+        if not resolved:
+            # The future was already done - typically cancelled by the
+            # expiring wait_for an instant before the operator's click
+            # landed. The approval did NOT take effect (the caller was told
+            # the request expired and nothing was forwarded), so report
+            # "not found or already processed" rather than a phantom
+            # success, and broadcast no request_approved event.
+            logger.info(f"Request {request_id} was already resolved; approve ignored")
+            return False
+
         await self._notify_subscribers("request_approved", pending_snapshot)
+        notifications.notify_request_resolved(pending, ConfirmationOutcome.APPROVED.value)
         return True
 
     async def reject(self, request_id: str) -> bool:
-        """Reject a request. Returns True if found and rejected."""
+        """
+        Reject a request. Returns True only if the rejection took effect;
+        False if the request is unknown or was already resolved (e.g. its
+        confirmation window expired first).
+        """
+        resolved = False
         async with self._lock:
             if request_id not in self._by_id:
                 return False
@@ -216,14 +281,22 @@ class WebConfirmationQueue:
                 pass  # Already removed
 
             if not pending.result_future.done():
-                pending.result_future.set_result(False)
+                pending.result_future.set_result(ConfirmationOutcome.REJECTED)
+                resolved = True
                 logger.info(
                     f"Request {request_id} REJECTED via web: {pending.method} {pending.path}"
                 )
 
             pending_snapshot = self.get_pending_sync()
 
+        if not resolved:
+            # Mirror of approve(): the rejection did not take effect, so do
+            # not report success or broadcast request_rejected.
+            logger.info(f"Request {request_id} was already resolved; reject ignored")
+            return False
+
         await self._notify_subscribers("request_rejected", pending_snapshot)
+        notifications.notify_request_resolved(pending, ConfirmationOutcome.REJECTED.value)
         return True
 
     def subscribe(self) -> asyncio.Queue:

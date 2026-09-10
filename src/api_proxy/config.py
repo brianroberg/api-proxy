@@ -27,8 +27,25 @@ class Config:
 
     # Confirmation settings
     confirmation_mode: ConfirmationMode = ConfirmationMode.MODIFY
+    # Cross-repo invariant: this window must stay strictly shorter than every
+    # client's mutation timeout (calendar-agent calls mutating routes with
+    # PROXY_CONFIRM_TIMEOUT, default 330s), otherwise the client gives up
+    # before the operator decides and the outcome — including an approved
+    # mutation that then executes — is undeliverable. Raising
+    # confirmation_timeout therefore requires raising every client's mutation
+    # timeout FIRST. Nothing enforces this across repos; see README
+    # "Confirmation timeouts and client timeouts".
     confirmation_timeout: float | None = 300.0  # 5 minutes, None for no timeout
     web_confirmation: bool = False  # Use web-based confirmation instead of console
+
+    # Approval notifications (ntfy). Sends happen only in web-confirmation
+    # mode and only when the NTFY_TOKEN environment variable is set; see
+    # notifications.py.
+    ntfy_url: str = "https://ntfy.robergb.net/alerts-agent"
+    # Externally reachable base URL of this proxy, used to build the
+    # dashboard link in approval notifications (e.g. "https://proxy.example.com").
+    # Falls back to http://{host}:{port} when unset.
+    external_base_url: str | None = None
 
     # API base URLs
     gmail_api_base_url: str = "https://gmail.googleapis.com"

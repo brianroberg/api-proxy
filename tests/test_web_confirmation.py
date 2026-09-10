@@ -4,12 +4,24 @@ import asyncio
 
 import pytest
 
+from api_proxy import notifications
 from api_proxy.config import Config, ConfirmationMode, set_config
+from api_proxy.confirmation import ConfirmationOutcome
 from api_proxy.web_confirmation import (
     WebConfirmationQueue,
     get_web_queue,
     reset_web_queue,
 )
+
+
+def _drain(event_queue: asyncio.Queue) -> list[dict]:
+    """Collect every event a subscriber has received so far."""
+    events = []
+    while True:
+        try:
+            events.append(event_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return events
 
 
 @pytest.fixture
@@ -68,7 +80,7 @@ class TestWebConfirmationQueue:
 
         # Wait for request to complete
         result = await task
-        assert result is True
+        assert result is ConfirmationOutcome.APPROVED
 
     @pytest.mark.asyncio
     async def test_add_and_reject_request(self, web_queue, config_web_confirm):
@@ -93,18 +105,18 @@ class TestWebConfirmationQueue:
 
         # Wait for request to complete
         result = await task
-        assert result is False
+        assert result is ConfirmationOutcome.REJECTED
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_false(self, web_queue, config_web_confirm):
-        """Request should return False if it times out."""
+    async def test_timeout_returns_expired(self, web_queue, config_web_confirm):
+        """Request should return EXPIRED (not REJECTED) if it times out."""
         result = await web_queue.add_request(
             method="POST",
             path="/gmail/v1/users/me/messages/123/modify",
         )
 
-        # Should timeout and return False
-        assert result is False
+        # Should time out and report expiry
+        assert result is ConfirmationOutcome.EXPIRED
 
         # Queue should be empty after timeout
         pending = await web_queue.get_pending()
@@ -202,6 +214,129 @@ class TestWebConfirmationQueue:
             await task
         except asyncio.CancelledError:
             pass
+
+
+class TestOperatorDecisionVsExpiry:
+    """Regression tests for expiry racing operator decisions (review findings 1-2)."""
+
+    @pytest.mark.asyncio
+    async def test_approve_after_future_cancelled_returns_false(
+        self, web_queue, config_web_confirm
+    ):
+        """An approve landing after the wait expired must not report success.
+
+        Reproduces review finding 1: the expiring wait_for cancels the result
+        future; approve() then found the id still queued and returned True -
+        HTTP 200 "Request approved" plus a request_approved broadcast - while
+        the caller was told EXPIRED and nothing was ever forwarded.
+        """
+        task = asyncio.create_task(web_queue.add_request(method="POST", path="/test"))
+        await asyncio.sleep(0.05)
+        pending = await web_queue.get_pending()
+        request_id = pending[0]["id"]
+
+        subscriber = web_queue.subscribe()
+        # Deterministic stand-in for the race: the expiring wait_for has
+        # cancelled the future before the operator's click lands.
+        web_queue._by_id[request_id].result_future.cancel()
+
+        success = await web_queue.approve(request_id)
+        assert success is False  # routes to 404 "not found or already processed"
+
+        # And no phantom request_approved broadcast
+        events = _drain(subscriber)
+        assert all(e["event"] != "request_approved" for e in events)
+
+        web_queue.unsubscribe(subscriber)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_reject_after_future_cancelled_returns_false(self, web_queue, config_web_confirm):
+        """Mirror of the approve defect for reject()."""
+        task = asyncio.create_task(web_queue.add_request(method="POST", path="/test"))
+        await asyncio.sleep(0.05)
+        pending = await web_queue.get_pending()
+        request_id = pending[0]["id"]
+
+        subscriber = web_queue.subscribe()
+        web_queue._by_id[request_id].result_future.cancel()
+
+        success = await web_queue.reject(request_id)
+        assert success is False
+
+        events = _drain(subscriber)
+        assert all(e["event"] != "request_rejected" for e in events)
+
+        web_queue.unsubscribe(subscriber)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_decision_recorded_despite_timeout_is_honored(
+        self, web_queue, config_web_confirm, monkeypatch
+    ):
+        """A decision that made it onto the future must win over the timer.
+
+        Reproduces review finding 2: on Python >= 3.12, asyncio.wait_for no
+        longer recovers a done future on timeout - when set_result(APPROVED)
+        and the timer callback run in the same event-loop batch, wait_for
+        still raises TimeoutError and the recorded approval was discarded as
+        EXPIRED (with a spurious "expired" follow-up notification).
+        """
+        resolved_calls = []
+        monkeypatch.setattr(
+            notifications,
+            "notify_request_resolved",
+            lambda pending, outcome: resolved_calls.append(outcome),
+        )
+
+        async def wait_for_racing_timer(future, timeout):
+            # Same observable state as the 3.12 race: the future holds the
+            # operator's decision, yet wait_for raises TimeoutError.
+            if not future.done():
+                future.set_result(ConfirmationOutcome.APPROVED)
+            raise TimeoutError
+
+        monkeypatch.setattr("api_proxy.web_confirmation.asyncio.wait_for", wait_for_racing_timer)
+
+        subscriber = web_queue.subscribe()
+        result = await web_queue.add_request(method="POST", path="/test")
+
+        assert result is ConfirmationOutcome.APPROVED
+        # Only the matching resolution may fire: no "expired" follow-up
+        assert "expired" not in resolved_calls
+        # No request_timeout broadcast either
+        events = _drain(subscriber)
+        assert all(e["event"] != "request_timeout" for e in events)
+        # The entry must not leak in the queue
+        assert await web_queue.get_pending() == []
+
+        web_queue.unsubscribe(subscriber)
+
+    @pytest.mark.asyncio
+    async def test_recovery_returns_recorded_result(self, web_queue):
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(ConfirmationOutcome.REJECTED)
+        assert web_queue._recover_operator_decision(future) is ConfirmationOutcome.REJECTED
+
+    @pytest.mark.asyncio
+    async def test_recovery_ignores_cancelled_future(self, web_queue):
+        future = asyncio.get_running_loop().create_future()
+        future.cancel()
+        assert web_queue._recover_operator_decision(future) is None
+
+    @pytest.mark.asyncio
+    async def test_recovery_ignores_pending_future(self, web_queue):
+        future = asyncio.get_running_loop().create_future()
+        assert web_queue._recover_operator_decision(future) is None
+        future.cancel()
 
 
 class TestSSESubscription:

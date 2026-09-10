@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 from api_proxy.calendar.handlers import build_rsvp_attendees
+from api_proxy.confirmation import ConfirmationOutcome
 
 
 class TestBuildRsvpAttendees:
@@ -365,7 +366,7 @@ class TestRespondConfirmation:
             mock_get_client.return_value = mock_client
 
             mock_handler = AsyncMock()
-            mock_handler.confirm = AsyncMock(return_value=True)
+            mock_handler.confirm = AsyncMock(return_value=ConfirmationOutcome.APPROVED)
             mock_get_handler.return_value = mock_handler
 
             resp = client.post(
@@ -395,7 +396,7 @@ class TestRespondConfirmation:
             mock_get_client.return_value = mock_client
 
             mock_handler = AsyncMock()
-            mock_handler.confirm = AsyncMock(return_value=False)
+            mock_handler.confirm = AsyncMock(return_value=ConfirmationOutcome.REJECTED)
             mock_get_handler.return_value = mock_handler
 
             resp = client.post(

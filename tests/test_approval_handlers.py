@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from api_proxy.approval.handlers import router
 from api_proxy.config import Config, ConfirmationMode, set_config
+from api_proxy.confirmation import ConfirmationOutcome
 from api_proxy.main import app
 from api_proxy.web_confirmation import get_web_queue, reset_web_queue
 
@@ -118,7 +119,7 @@ class TestApproveEndpoint:
 
             # Wait for result
             loop.run_until_complete(task)
-            assert result_holder["result"] is True
+            assert result_holder["result"] is ConfirmationOutcome.APPROVED
         finally:
             loop.close()
 
@@ -132,7 +133,7 @@ class TestRejectEndpoint:
     """Tests for POST /approval/api/{request_id}/reject endpoint."""
 
     def test_reject_request(self, web_client, config_web_confirm):
-        """Rejecting request should return success and resolve request as False."""
+        """Rejecting request should return success and resolve request as REJECTED."""
         queue = get_web_queue()
         result_holder = {}
 
@@ -161,7 +162,7 @@ class TestRejectEndpoint:
 
             # Wait for result
             loop.run_until_complete(task)
-            assert result_holder["result"] is False
+            assert result_holder["result"] is ConfirmationOutcome.REJECTED
         finally:
             loop.close()
 

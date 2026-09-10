@@ -3,7 +3,7 @@
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +11,19 @@ from httpx import Response
 
 from api_proxy.config import Config, ConfirmationMode, set_config
 from api_proxy.main import app
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ntfy_sends(monkeypatch):
+    """
+    Never let a test push a real ntfy notification.
+
+    With NTFY_TOKEN unset, notifications are disabled entirely; patching the
+    network-touching _send is belt-and-braces for tests that opt back in by
+    setting the token.
+    """
+    monkeypatch.delenv("NTFY_TOKEN", raising=False)
+    monkeypatch.setattr("api_proxy.notifications._send", AsyncMock())
 
 
 @pytest.fixture

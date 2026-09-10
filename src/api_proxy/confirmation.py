@@ -6,6 +6,7 @@ import asyncio
 import logging
 import sys
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from api_proxy.config import ConfirmationMode, get_config
@@ -14,6 +15,22 @@ if TYPE_CHECKING:
     from api_proxy.web_confirmation import WebConfirmationQueue
 
 logger = logging.getLogger(__name__)
+
+
+class ConfirmationOutcome(Enum):
+    """
+    Outcome of a confirmation request.
+
+    REJECTED and EXPIRED are deliberately distinct: a rejection means a human
+    looked at the request and said no (callers should not retry it), while an
+    expiry means no operator responded within the confirmation window
+    (retrying later is reasonable). Collapsing the two would tell callers
+    "rejected by operator" when nobody ever saw the prompt.
+    """
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
 
 
 @dataclass
@@ -115,16 +132,18 @@ class ConfirmationHandler:
             sys.stdout.flush()
             return None
 
-    async def confirm(self, request: ConfirmationRequest) -> bool:
+    async def confirm(self, request: ConfirmationRequest) -> ConfirmationOutcome:
         """
         Request confirmation from the operator.
 
-        Returns True if approved, False if rejected or timed out.
-        Only one confirmation can be pending at a time (in console mode).
+        Returns APPROVED if the operator said yes, REJECTED if the operator
+        said no, and EXPIRED if no operator responded within the
+        confirmation timeout. Only one confirmation can be pending at a time
+        (in console mode).
         """
         # Web-based confirmation: delegate to queue
         if self._web_queue is not None:
-            approved = await self._web_queue.add_request(
+            outcome = await self._web_queue.add_request(
                 method=request.method,
                 path=request.path,
                 query_params=request.query_params,
@@ -140,11 +159,15 @@ class ConfirmationHandler:
                 event_end=request.event_end,
                 rsvp_response=request.rsvp_response,
             )
-            if approved:
+            if outcome is ConfirmationOutcome.APPROVED:
                 logger.info(f"Request APPROVED: {request.method} {request.path}")
+            elif outcome is ConfirmationOutcome.EXPIRED:
+                logger.info(
+                    f"Request EXPIRED (no operator response): {request.method} {request.path}"
+                )
             else:
                 logger.info(f"Request REJECTED: {request.method} {request.path}")
-            return approved
+            return outcome
 
         # Console-based confirmation: use stdin
         config = get_config()
@@ -157,14 +180,17 @@ class ConfirmationHandler:
                 logger.info(f"Request APPROVED: {request.method} {request.path}")
                 sys.stdout.write("[APPROVED]\n")
                 sys.stdout.flush()
-                return True
+                return ConfirmationOutcome.APPROVED
+            elif response is None:
+                logger.info(
+                    f"Request EXPIRED (confirmation timed out): {request.method} {request.path}"
+                )
+                return ConfirmationOutcome.EXPIRED
             else:
-                reason = "timed out" if response is None else "rejected"
-                logger.info(f"Request REJECTED ({reason}): {request.method} {request.path}")
-                if response is not None:
-                    sys.stdout.write("[REJECTED]\n")
-                    sys.stdout.flush()
-                return False
+                logger.info(f"Request REJECTED: {request.method} {request.path}")
+                sys.stdout.write("[REJECTED]\n")
+                sys.stdout.flush()
+                return ConfirmationOutcome.REJECTED
 
 
 # Global handler instance

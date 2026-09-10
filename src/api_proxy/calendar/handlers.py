@@ -14,6 +14,7 @@ from api_proxy.auth import verify_api_key
 from api_proxy.calendar.client import get_calendar_client
 from api_proxy.calendar.models import EventRequest, RespondRequest
 from api_proxy.confirmation import (
+    ConfirmationOutcome,
     ConfirmationRequest,
     get_confirmation_handler,
     requires_confirmation,
@@ -185,7 +186,8 @@ async def handle_confirmation(
     rsvp_response: str | None = None,
 ) -> None:
     """
-    Handle confirmation if required. Raises HTTPException if rejected.
+    Handle confirmation if required. Raises HTTPException if rejected or if
+    the confirmation window expired with no operator response.
     """
     if not requires_confirmation(method, is_modify):
         return
@@ -203,18 +205,40 @@ async def handle_confirmation(
         rsvp_response=rsvp_response,
     )
 
-    approved = await handler.confirm(confirmation_request)
-    if not approved:
-        key_name = getattr(request.state, "api_key_name", "unknown")
-        logger.warning(f"Request rejected by operator: {method} {path} (key: {key_name})")
+    outcome = await handler.confirm(confirmation_request)
+    if outcome is ConfirmationOutcome.APPROVED:
+        return
+
+    key_name = getattr(request.state, "api_key_name", "unknown")
+    if outcome is ConfirmationOutcome.EXPIRED:
+        # Nobody ever saw the prompt: distinguishable from a rejection so
+        # callers know a retry (after notifying the operator) is reasonable.
+        logger.warning(f"Confirmation expired unanswered: {method} {path} (key: {key_name})")
         raise HTTPException(
             status_code=403,
-            detail={"error": "forbidden", "message": "Request rejected by operator"},
+            detail={
+                "error": "confirmation_expired",
+                "message": "Confirmation request expired before an operator responded",
+            },
         )
 
+    logger.warning(f"Request rejected by operator: {method} {path} (key: {key_name})")
+    raise HTTPException(
+        status_code=403,
+        detail={"error": "forbidden", "message": "Request rejected by operator"},
+    )
 
-def _should_confirm_invitation(send_updates: str | None) -> bool:
-    """Check if the sendUpdates parameter requires confirmation."""
+
+def _sends_invitations(send_updates: str | None) -> bool:
+    """
+    Whether this sendUpdates value would make the backend send invitation
+    emails ("all" or "externalOnly").
+
+    Used only to enrich the confirmation prompt. It is deliberately NOT the
+    confirmation gate: every event mutation passes is_modify=True regardless
+    of sendUpdates, so bare creates/updates are confirmed on the same footing
+    as DELETE and /respond.
+    """
     return send_updates is not None and send_updates in ("all", "externalOnly")
 
 
@@ -462,23 +486,22 @@ async def create_event(
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
 
-    # Determine if confirmation is needed
-    # - Always confirm if sendUpdates is "all" or "externalOnly" (sending invitations)
-    is_modify = _should_confirm_invitation(sendUpdates)
-
     # Extract attendee emails for confirmation prompt
     attendee_emails = None
     if body.attendees:
         attendee_emails = [a.email for a in body.attendees]
 
+    # Every event mutation is confirmed on the same footing as DELETE and
+    # /respond (is_modify=True). sendUpdates only enriches the prompt when it
+    # would send invitations; it no longer decides whether to confirm.
     await handle_confirmation(
         request,
         "POST",
         path,
-        is_modify=is_modify,
+        is_modify=True,
         event_summary=body.summary,
         event_attendees=attendee_emails,
-        send_updates=sendUpdates if _should_confirm_invitation(sendUpdates) else None,
+        send_updates=sendUpdates if _sends_invitations(sendUpdates) else None,
         event_start=_format_event_datetime(body.start),
         event_end=_format_event_datetime(body.end),
     )
@@ -528,21 +551,21 @@ async def update_event(
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
 
-    # Confirm if sending invitations
-    is_modify = _should_confirm_invitation(sendUpdates)
-
     attendee_emails = None
     if body.attendees:
         attendee_emails = [a.email for a in body.attendees]
 
+    # Every event mutation is confirmed on the same footing as DELETE and
+    # /respond (is_modify=True). sendUpdates only enriches the prompt when it
+    # would send invitations; it no longer decides whether to confirm.
     await handle_confirmation(
         request,
         "PUT",
         path,
-        is_modify=is_modify,
+        is_modify=True,
         event_summary=body.summary,
         event_attendees=attendee_emails,
-        send_updates=sendUpdates if _should_confirm_invitation(sendUpdates) else None,
+        send_updates=sendUpdates if _sends_invitations(sendUpdates) else None,
         event_start=_format_event_datetime(body.start),
         event_end=_format_event_datetime(body.end),
     )
@@ -587,21 +610,21 @@ async def patch_event(
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
 
-    # Confirm if sending invitations
-    is_modify = _should_confirm_invitation(sendUpdates)
-
     attendee_emails = None
     if body.attendees:
         attendee_emails = [a.email for a in body.attendees]
 
+    # Every event mutation is confirmed on the same footing as DELETE and
+    # /respond (is_modify=True). sendUpdates only enriches the prompt when it
+    # would send invitations; it no longer decides whether to confirm.
     await handle_confirmation(
         request,
         "PATCH",
         path,
-        is_modify=is_modify,
+        is_modify=True,
         event_summary=body.summary,
         event_attendees=attendee_emails,
-        send_updates=sendUpdates if _should_confirm_invitation(sendUpdates) else None,
+        send_updates=sendUpdates if _sends_invitations(sendUpdates) else None,
         event_start=_format_event_datetime(body.start),
         event_end=_format_event_datetime(body.end),
     )

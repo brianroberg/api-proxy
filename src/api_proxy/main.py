@@ -369,7 +369,24 @@ def parse_args() -> argparse.Namespace:
         "--confirmation-timeout",
         type=float,
         default=300.0,
-        help="Timeout for confirmation prompts in seconds (default: 300)",
+        help="Timeout for confirmation prompts in seconds (default: 300). "
+        "Must stay shorter than every client's mutation timeout; see README.",
+    )
+
+    parser.add_argument(
+        "--ntfy-url",
+        default="https://ntfy.robergb.net/alerts-agent",
+        help="ntfy topic URL for approval notifications "
+        "(default: https://ntfy.robergb.net/alerts-agent). Notifications are "
+        "sent only in web-confirmation mode and only when the NTFY_TOKEN "
+        "environment variable is set.",
+    )
+
+    parser.add_argument(
+        "--external-base-url",
+        default=None,
+        help="Externally reachable base URL of this proxy, used for the "
+        "dashboard link in approval notifications (default: http://HOST:PORT)",
     )
 
     parser.add_argument(
@@ -414,6 +431,8 @@ def main() -> int:
         confirmation_mode=confirmation_mode,
         confirmation_timeout=args.confirmation_timeout if args.confirmation_timeout > 0 else None,
         web_confirmation=args.web_confirm,
+        ntfy_url=args.ntfy_url,
+        external_base_url=args.external_base_url,
     )
     set_config(config)
 

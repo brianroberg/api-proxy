@@ -8,7 +8,7 @@ The proxy currently supports **Gmail** and **Google Calendar** APIs:
 
 - **Gmail**: Allows read operations, label modifications, and draft management but **blocks all email sending capabilities**. This is necessary because Gmail's OAuth scopes don't provide fine-grained control: the `gmail.modify` scope (required for label changes) also grants send permission. The proxy provides the missing capability boundary.
 
-- **Calendar**: Allows full event management (create, read, update, delete) with optional human confirmation for operations that send invitations to attendees.
+- **Calendar**: Allows full event management (create, read, update, delete). Every event mutation — create, update, patch, delete, and RSVP — requires human confirmation when confirmation is enabled (the default `--confirm-modify` mode); reads never do. Operations that would send invitations to attendees are additionally highlighted in the confirmation prompt.
 
 ## Architecture
 
@@ -26,7 +26,8 @@ api-proxy (this server)
     ├──► Allowed operations → [Human confirmation if enabled]
     │                              │
     │                              ├── Approved → Forward to backend API
-    │                              └── Rejected → 403 Forbidden
+    │                              ├── Rejected → 403 Forbidden
+    │                              └── Expired (nobody responded) → 403 confirmation_expired
     │
     │ Backend APIs (with credentials)
     ▼
@@ -168,6 +169,7 @@ API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
 | 403 | `auth_error` | API key is disabled |
 | 403 | `forbidden` | Blocked operation (send, drafts, etc.) |
 | 403 | `forbidden` | Confirmation rejected by operator |
+| 403 | `confirmation_expired` | Confirmation request expired before an operator responded |
 | 422 | `proxy_error` | Request validation failed (malformed JSON, missing fields) |
 | 502 | `backend_error` | Backend unreachable or authentication failed |
 | 4xx/5xx | `backend_error` | Error passed through from Gmail API |
@@ -576,7 +578,11 @@ curl -X GET "http://localhost:8000/calendar/v3/calendars/primary/events/abc123de
 
 `POST /calendar/v3/calendars/{calendarId}/events`
 
-Create a new event in a calendar.
+Create a new event in a calendar. Like every event mutation, this requires
+operator confirmation when the proxy runs in `--confirm-modify` (default) or
+`--confirm-all` mode, regardless of `sendUpdates`. When `sendUpdates` is
+`all` or `externalOnly` the confirmation prompt additionally flags that
+invitations would be sent.
 
 **Query Parameters:**
 - `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
@@ -613,7 +619,9 @@ curl -X POST "http://localhost:8000/calendar/v3/calendars/primary/events" \
 
 `PUT /calendar/v3/calendars/{calendarId}/events/{eventId}`
 
-Replace an event entirely.
+Replace an event entirely. Requires operator confirmation in
+`--confirm-modify` (default) and `--confirm-all` modes, regardless of
+`sendUpdates`.
 
 **Query Parameters:**
 - `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
@@ -631,7 +639,9 @@ curl -X PUT "http://localhost:8000/calendar/v3/calendars/primary/events/abc123" 
 
 `PATCH /calendar/v3/calendars/{calendarId}/events/{eventId}`
 
-Partially update an event.
+Partially update an event. Requires operator confirmation in
+`--confirm-modify` (default) and `--confirm-all` modes, regardless of
+`sendUpdates`.
 
 **Query Parameters:**
 - `sendUpdates` (string): Whether to send notifications (`all`, `externalOnly`, `none`)
@@ -799,13 +809,34 @@ Allow this request? [y/N]:
 ```
 
 - Enter `y` or `Y` to approve and forward the request
-- Enter `n`, `N`, or just press Enter to reject (returns 403 to caller)
+- Enter `n`, `N`, or just press Enter to reject (returns 403 `forbidden`,
+  "Request rejected by operator", to the caller)
+- If nobody responds within the confirmation timeout, the request **expires**
+  (returns 403 with `{"error": "confirmation_expired", "message":
+  "Confirmation request expired before an operator responded"}`). An expiry
+  is deliberately distinguishable from a rejection: a rejection means a human
+  said no (don't retry), an expiry means nobody ever saw the prompt
+  (retrying later is reasonable).
 
 ### Important Notes
 
 - Blocked operations are **NEVER** subject to confirmation—they are always rejected
 - Confirmation prompts are synchronous—only one pending at a time
 - Default timeout is 5 minutes (configurable via `--confirmation-timeout`)
+
+### Confirmation Timeouts and Client Timeouts
+
+The confirmation window must stay **strictly shorter** than the mutation
+timeout of every client calling the proxy. If a client gives up before the
+operator decides, the outcome becomes undeliverable — worst case, the
+operator approves after the client has disconnected and the mutation
+executes unobserved. calendar-agent calls all mutating routes with a
+client-side timeout of `PROXY_CONFIRM_TIMEOUT` (default **330s**), chosen to
+exceed this server's `confirmation_timeout` (default **300s**). Nothing
+enforces that inequality across repositories, so **raising
+`--confirmation-timeout` requires raising every client's mutation timeout
+first** (see also the comment on `confirmation_timeout` in
+`src/api_proxy/config.py`).
 
 ### Web-Based Confirmation
 
@@ -845,6 +876,44 @@ AI Agent → HTTP Request
 ```
 
 **Note:** The approval UI has no authentication and assumes localhost-only deployment. Do not expose the approval endpoints to untrusted networks.
+
+### Approval Notifications (ntfy)
+
+In web-confirmation mode the proxy can push a phone/desktop notification via
+[ntfy](https://ntfy.sh) whenever a request enters the approval queue, so an
+operator learns about it even when the dashboard isn't open. Without a
+notification, an unseen request simply expires after `--confirmation-timeout`
+(default 5 minutes) and the caller is told it expired.
+
+Notifications are enabled by setting the `NTFY_TOKEN` environment variable
+(the bearer token for the ntfy topic; it is never logged or echoed). When
+`NTFY_TOKEN` is unset, notifications are disabled cleanly (logged once at
+startup of the first request, not per request). The topic URL defaults to
+`https://ntfy.robergb.net/alerts-agent` and can be changed with `--ntfy-url`.
+
+Each queued request sends one high-priority notification containing:
+
+- **Title**: what is being approved (e.g. `Approval needed: Delete event: Team Sync`)
+- **Body**: the method and resource, the exact expiry deadline, and what
+  happens on no action (the request expires; the caller is told it expired,
+  not that it was rejected)
+- **A "Review" action button** deep-linking to the request on the dashboard
+  (`/approval/#<request_id>`). Set `--external-base-url` to the proxy's
+  externally reachable URL so the link works from a phone; it defaults to
+  `http://HOST:PORT`.
+
+When the request is resolved — approved, rejected, or expired — a short
+low-priority follow-up is sent so a stale notification isn't acted on.
+
+Notifications are strictly best-effort: sends are fire-and-forget with a
+short timeout, and an ntfy outage can never fail, block, or delay the
+approval flow. For privacy, notification titles and bodies never contain
+third-party personal data — attendee names/emails and message senders are
+deliberately excluded ("Delete event: <summary>" style only), since ntfy
+messages are cached server-side and mirrored to every subscribed device.
+Console-mode confirmations do not notify: the dashboard the notification
+links to isn't mounted in console mode, and the prompt is already in front
+of the operator at the terminal.
 
 ## Approval UI API Reference
 
@@ -954,7 +1023,9 @@ uv run api-proxy [OPTIONS]
 | `--confirm-modify` | (default) | Require confirmation for modify operations |
 | `--no-confirm` | - | Disable confirmation |
 | `--web-confirm` | - | Use web-based confirmation UI instead of console |
-| `--confirmation-timeout` | `300` | Timeout for confirmation prompts (seconds) |
+| `--confirmation-timeout` | `300` | Timeout for confirmation prompts (seconds). Must stay shorter than every client's mutation timeout — see [Confirmation Timeouts and Client Timeouts](#confirmation-timeouts-and-client-timeouts) |
+| `--ntfy-url` | `https://ntfy.robergb.net/alerts-agent` | ntfy topic URL for approval notifications (sent only in web-confirmation mode with `NTFY_TOKEN` set) |
+| `--external-base-url` | `http://HOST:PORT` | Externally reachable base URL used for the dashboard link in approval notifications |
 | `--reload` | - | Enable auto-reload for development |
 | `--log-file` | - | Write logs to file (in addition to console) |
 
@@ -963,6 +1034,7 @@ uv run api-proxy [OPTIONS]
 | Variable | Description |
 |----------|-------------|
 | `API_KEYS_FILE` | Path to API keys file (alternative to `--api-keys-file`) |
+| `NTFY_TOKEN` | Bearer token for approval notifications via ntfy. Unset disables notifications. Never logged or echoed |
 
 ## Development
 

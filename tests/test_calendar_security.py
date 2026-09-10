@@ -2,6 +2,10 @@
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from api_proxy.confirmation import ConfirmationOutcome
+
 
 class TestCalendarAllowlistApproach:
     """Verify Calendar operations follow allowlist approach."""
@@ -79,7 +83,7 @@ class TestCalendarConfirmationModes:
         # Should succeed without confirmation
         assert response.status_code == 200
 
-    def test_create_event_no_confirm_without_invitations(
+    def test_create_event_requires_confirmation_without_send_updates(
         self,
         client,
         auth_headers,
@@ -87,10 +91,14 @@ class TestCalendarConfirmationModes:
         mock_calendar_response,
         mock_created_event,
     ):
-        """Creating event without sendUpdates should not require confirmation."""
+        """Bare creates (no sendUpdates) require confirmation in modify mode."""
         mock_response = mock_calendar_response(200, mock_created_event)
 
-        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
+        # Mock stdin to return 'n' (reject)
+        with (
+            patch("sys.stdin.readline", return_value="n\n"),
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+        ):
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -106,8 +114,10 @@ class TestCalendarConfirmationModes:
                 headers=auth_headers,
             )
 
-        # Should succeed without confirmation
-        assert response.status_code == 200
+        # Rejected by the operator, and nothing was forwarded to the backend
+        assert response.status_code == 403
+        assert response.json()["error"] == "forbidden"
+        mock_client.request.assert_not_awaited()
 
 
 class TestDeleteEventConfirmation:
@@ -194,7 +204,7 @@ class TestInvitationConfirmation:
         # Should be rejected because operator said no
         assert response.status_code == 403
 
-    def test_create_with_send_updates_none_no_confirmation(
+    def test_create_with_send_updates_none_still_requires_confirmation(
         self,
         client,
         auth_headers,
@@ -202,10 +212,14 @@ class TestInvitationConfirmation:
         mock_calendar_response,
         mock_created_event,
     ):
-        """Creating event with sendUpdates=none should not require confirmation."""
+        """sendUpdates=none no longer skips the gate: a create is still a mutation."""
         mock_response = mock_calendar_response(200, mock_created_event)
 
-        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
+        # Mock stdin to return 'n' (reject)
+        with (
+            patch("sys.stdin.readline", return_value="n\n"),
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+        ):
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -220,8 +234,9 @@ class TestInvitationConfirmation:
                 headers=auth_headers,
             )
 
-        # Should succeed without confirmation
-        assert response.status_code == 200
+        # Rejected by the operator, and nothing was forwarded to the backend
+        assert response.status_code == 403
+        mock_client.request.assert_not_awaited()
 
     def test_update_with_send_updates_external_only_requires_confirmation(
         self, client, auth_headers, config_confirm_modify, mock_calendar_response, mock_event
@@ -250,6 +265,195 @@ class TestInvitationConfirmation:
 
         # Should be rejected because operator said no
         assert response.status_code == 403
+
+
+EVENT_MUTATIONS = [
+    pytest.param("post", "/calendar/v3/calendars/primary/events", id="create"),
+    pytest.param("put", "/calendar/v3/calendars/primary/events/event1", id="update"),
+    pytest.param("patch", "/calendar/v3/calendars/primary/events/event1", id="patch"),
+]
+
+EVENT_BODY = {
+    "summary": "Team Sync",
+    "start": {"dateTime": "2025-01-21T14:00:00-05:00"},
+    "end": {"dateTime": "2025-01-21T15:00:00-05:00"},
+}
+
+
+class TestBareMutationConfirmation:
+    """All event mutations are gated on the same footing as DELETE (issue #7).
+
+    Bare creates/updates/patches (no sendUpdates) used to bypass confirmation
+    entirely in MODIFY mode while DELETE and /respond always confirmed.
+    """
+
+    @pytest.mark.parametrize(("method", "url"), EVENT_MUTATIONS)
+    def test_bare_mutation_requires_confirmation_in_modify_mode(
+        self,
+        client,
+        auth_headers,
+        config_confirm_modify,
+        mock_calendar_response,
+        mock_created_event,
+        method,
+        url,
+    ):
+        """POST/PUT/PATCH without sendUpdates must prompt in MODIFY mode."""
+        mock_response = mock_calendar_response(200, mock_created_event)
+
+        # Mock stdin to return 'n' (reject)
+        with (
+            patch("sys.stdin.readline", return_value="n\n"),
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+        ):
+            mock_client = AsyncMock()
+            mock_client.request.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            response = getattr(client, method)(url, json=EVENT_BODY, headers=auth_headers)
+
+        assert response.status_code == 403
+        data = response.json()
+        assert data["error"] == "forbidden"
+        assert data["message"] == "Request rejected by operator"
+        # The mutation must never reach the backend
+        mock_client.request.assert_not_awaited()
+
+    @pytest.mark.parametrize(("method", "url"), EVENT_MUTATIONS)
+    def test_bare_mutation_approved_confirmation_forwards(
+        self,
+        client,
+        auth_headers,
+        config_confirm_modify,
+        mock_calendar_response,
+        mock_created_event,
+        method,
+        url,
+    ):
+        """Operator approval lets the bare mutation through to the backend."""
+        mock_response = mock_calendar_response(200, mock_created_event)
+
+        # Mock stdin to return 'y' (approve)
+        with (
+            patch("sys.stdin.readline", return_value="y\n"),
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+        ):
+            mock_client = AsyncMock()
+            mock_client.request.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            response = getattr(client, method)(url, json=EVENT_BODY, headers=auth_headers)
+
+        assert response.status_code == 200
+        mock_client.request.assert_awaited_once()
+
+    @pytest.mark.parametrize(("method", "url"), EVENT_MUTATIONS)
+    def test_bare_mutation_no_confirm_in_none_mode(
+        self,
+        client,
+        auth_headers,
+        config_no_confirm,
+        mock_calendar_response,
+        mock_created_event,
+        method,
+        url,
+    ):
+        """NONE mode is unchanged: bare mutations execute without any prompt."""
+        mock_response = mock_calendar_response(200, mock_created_event)
+
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.request.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            response = getattr(client, method)(url, json=EVENT_BODY, headers=auth_headers)
+
+        assert response.status_code == 200
+        mock_client.request.assert_awaited_once()
+
+    def test_create_still_prompts_in_all_mode(
+        self, client, auth_headers, config_confirm_all, mock_calendar_response, mock_created_event
+    ):
+        """ALL mode is unchanged: mutations prompt there too."""
+        mock_response = mock_calendar_response(200, mock_created_event)
+
+        with (
+            patch("sys.stdin.readline", return_value="n\n"),
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+        ):
+            mock_client = AsyncMock()
+            mock_client.request.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            response = client.post(
+                "/calendar/v3/calendars/primary/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        mock_client.request.assert_not_awaited()
+
+
+class TestCalendarConfirmationOutcomes:
+    """Rejection and expiry produce distinguishable 403 details (issue #8)."""
+
+    @staticmethod
+    def _mocks(mock_get_client, mock_get_handler, outcome):
+        mock_client = AsyncMock()
+        mock_get_client.return_value = mock_client
+        mock_handler = AsyncMock()
+        mock_handler.confirm = AsyncMock(return_value=outcome)
+        mock_get_handler.return_value = mock_handler
+        return mock_client
+
+    def test_expired_confirmation_returns_confirmation_expired(
+        self, client, auth_headers, config_confirm_modify
+    ):
+        """An unanswered confirmation returns confirmation_expired, and no write happens."""
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client = self._mocks(
+                mock_get_client, mock_get_handler, ConfirmationOutcome.EXPIRED
+            )
+            response = client.post(
+                "/calendar/v3/calendars/primary/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "error": "confirmation_expired",
+            "message": "Confirmation request expired before an operator responded",
+        }
+        mock_client.request.assert_not_awaited()
+
+    def test_rejected_confirmation_keeps_forbidden_detail(
+        self, client, auth_headers, config_confirm_modify
+    ):
+        """Genuine rejection keeps the exact pre-existing 403 detail."""
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client = self._mocks(
+                mock_get_client, mock_get_handler, ConfirmationOutcome.REJECTED
+            )
+            response = client.post(
+                "/calendar/v3/calendars/primary/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        assert response.json() == {
+            "error": "forbidden",
+            "message": "Request rejected by operator",
+        }
+        mock_client.request.assert_not_awaited()
 
 
 class TestCalendarBypassAttempts:
