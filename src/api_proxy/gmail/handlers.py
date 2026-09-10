@@ -140,9 +140,7 @@ async def handle_confirmation(
         )
 
 
-async def _resolve_label_names(
-    user_id: str, label_ids: list[str]
-) -> list[str]:
+async def _resolve_label_names(user_id: str, label_ids: list[str]) -> list[str]:
     """
     Resolve Gmail label IDs to human-readable names.
 
@@ -166,19 +164,14 @@ async def _resolve_label_names(
             return label_ids
 
         data = response.json()
-        id_to_name = {
-            label["id"]: label["name"]
-            for label in data.get("labels", [])
-        }
+        id_to_name = {label["id"]: label["name"] for label in data.get("labels", [])}
         return [id_to_name.get(lid, lid) for lid in label_ids]
     except Exception as e:
         logger.warning(f"Exception resolving label names: {e}")
         return label_ids
 
 
-async def _fetch_message_metadata(
-    user_id: str, message_id: str
-) -> tuple[str | None, str | None]:
+async def _fetch_message_metadata(user_id: str, message_id: str) -> tuple[str | None, str | None]:
     """
     Fetch message metadata (sender, subject) for confirmation display.
 
@@ -407,9 +400,11 @@ async def modify_message(
         all_ids = (body.addLabelIds or []) + (body.removeLabelIds or [])
         if all_ids:
             resolved = await _resolve_label_names(user_id, all_ids)
-            id_to_name = dict(zip(all_ids, resolved))
+            id_to_name = dict(zip(all_ids, resolved, strict=False))
             add_names = [id_to_name[lid] for lid in body.addLabelIds] if body.addLabelIds else None
-            remove_names = [id_to_name[lid] for lid in body.removeLabelIds] if body.removeLabelIds else None
+            remove_names = (
+                [id_to_name[lid] for lid in body.removeLabelIds] if body.removeLabelIds else None
+            )
 
         # Fetch message metadata (sender/subject)
         sender, subject = await _fetch_message_metadata(user_id, message_id)

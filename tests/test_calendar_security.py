@@ -1,6 +1,6 @@
 """Security tests for Google Calendar API proxy."""
 
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, patch
 
 
 class TestCalendarAllowlistApproach:
@@ -66,9 +66,7 @@ class TestCalendarConfirmationModes:
         """Read operations should not require confirmation in modify mode."""
         mock_response = mock_calendar_response(200, mock_events_list)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -82,14 +80,17 @@ class TestCalendarConfirmationModes:
         assert response.status_code == 200
 
     def test_create_event_no_confirm_without_invitations(
-        self, client, auth_headers, config_confirm_modify, mock_calendar_response, mock_created_event
+        self,
+        client,
+        auth_headers,
+        config_confirm_modify,
+        mock_calendar_response,
+        mock_created_event,
     ):
         """Creating event without sendUpdates should not require confirmation."""
         mock_response = mock_calendar_response(200, mock_created_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -119,10 +120,10 @@ class TestDeleteEventConfirmation:
         mock_response = mock_calendar_response(204, None)
 
         # Mock stdin to return 'n' (reject)
-        with patch("sys.stdin.readline", return_value="n\n"), \
-             patch(
-                 "api_proxy.calendar.handlers.get_calendar_client"
-             ) as mock_get_client:
+        with (
+            patch("sys.stdin.readline", return_value="n\n"),
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+        ):
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -143,9 +144,7 @@ class TestDeleteEventConfirmation:
         """DELETE should work without confirmation in none mode."""
         mock_response = mock_calendar_response(204, None)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -162,16 +161,21 @@ class TestInvitationConfirmation:
     """Tests for invitation (sendUpdates) confirmation behavior."""
 
     def test_create_with_send_updates_all_requires_confirmation(
-        self, client, auth_headers, config_confirm_modify, mock_calendar_response, mock_created_event
+        self,
+        client,
+        auth_headers,
+        config_confirm_modify,
+        mock_calendar_response,
+        mock_created_event,
     ):
         """Creating event with sendUpdates=all should require confirmation."""
         mock_response = mock_calendar_response(200, mock_created_event)
 
         # Mock stdin to return 'n' (reject)
-        with patch("sys.stdin.readline", return_value="n\n"), \
-             patch(
-                 "api_proxy.calendar.handlers.get_calendar_client"
-             ) as mock_get_client:
+        with (
+            patch("sys.stdin.readline", return_value="n\n"),
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+        ):
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -191,14 +195,17 @@ class TestInvitationConfirmation:
         assert response.status_code == 403
 
     def test_create_with_send_updates_none_no_confirmation(
-        self, client, auth_headers, config_confirm_modify, mock_calendar_response, mock_created_event
+        self,
+        client,
+        auth_headers,
+        config_confirm_modify,
+        mock_calendar_response,
+        mock_created_event,
     ):
         """Creating event with sendUpdates=none should not require confirmation."""
         mock_response = mock_calendar_response(200, mock_created_event)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -223,10 +230,10 @@ class TestInvitationConfirmation:
         mock_response = mock_calendar_response(200, mock_event)
 
         # Mock stdin to return 'n' (reject)
-        with patch("sys.stdin.readline", return_value="n\n"), \
-             patch(
-                 "api_proxy.calendar.handlers.get_calendar_client"
-             ) as mock_get_client:
+        with (
+            patch("sys.stdin.readline", return_value="n\n"),
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+        ):
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -266,13 +273,13 @@ class TestCalendarBypassAttempts:
         # This is NOT a security bypass - the request fails
         assert response.status_code == 404
 
-    def test_trailing_slash_calendar(self, client, auth_headers, mock_calendar_response, mock_events_list):
+    def test_trailing_slash_calendar(
+        self, client, auth_headers, mock_calendar_response, mock_events_list
+    ):
         """Trailing slashes should be handled correctly."""
         mock_response = mock_calendar_response(200, mock_events_list)
 
-        with patch(
-            "api_proxy.calendar.handlers.get_calendar_client"
-        ) as mock_get_client:
+        with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
             mock_client.request.return_value = mock_response
             mock_get_client.return_value = mock_client
