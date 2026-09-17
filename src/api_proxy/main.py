@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api_proxy.calendar.client import close_calendar_client
 from api_proxy.calendar.handlers import router as calendar_router
-from api_proxy.config import Config, ConfirmationMode, set_config
+from api_proxy.config import Config, ConfirmationMode, parse_exempt_calendars, set_config
 from api_proxy.gmail.client import close_gmail_client
 from api_proxy.gmail.handlers import router as gmail_router
 from api_proxy.models import ErrorResponse, HealthResponse
@@ -392,6 +392,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--approval-exempt-calendars",
+        default=os.environ.get("APPROVAL_EXEMPT_CALENDARS", ""),
+        help="Comma-separated calendar ids whose event writes (create/update/"
+        "patch/delete) bypass the approval queue; matched by exact id. "
+        "(default: the APPROVAL_EXEMPT_CALENDARS environment variable, else none)",
+    )
+
+    parser.add_argument(
         "--reload",
         action="store_true",
         help="Enable auto-reload for development",
@@ -435,6 +443,7 @@ def main() -> int:
         web_confirmation=args.web_confirm,
         ntfy_url=args.ntfy_url,
         external_base_url=args.external_base_url,
+        approval_exempt_calendars=parse_exempt_calendars(args.approval_exempt_calendars),
     )
     set_config(config)
 
@@ -456,6 +465,11 @@ def main() -> int:
 
     logger.info(f"Starting API Proxy on {config.host}:{config.port}")
     logger.info(f"Confirmation mode: {confirmation_mode.value}")
+    if config.approval_exempt_calendars:
+        logger.info(
+            "Approval-exempt calendars (event writes bypass the queue): "
+            + ", ".join(sorted(config.approval_exempt_calendars))
+        )
     logger.info(f"API keys file: {config.api_keys_file}")
     logger.info(f"Token file: {config.token_file}")
 
