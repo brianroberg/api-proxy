@@ -5,11 +5,12 @@ test_calendar_security.py; this module pins how the setting is read.
 """
 
 import sys
+from unittest.mock import patch
 
 import pytest
 
 from api_proxy import main as main_mod
-from api_proxy.config import Config, parse_exempt_calendars
+from api_proxy.config import Config, get_config, parse_exempt_calendars
 
 EARMARKS = (
     "c_dee653a1a8d29be6243468773c8c7909bd3936ac2ff477fad3dd3852b3eeb6bf@group.calendar.google.com"
@@ -63,3 +64,29 @@ class TestCliWiring:
         monkeypatch.setenv("APPROVAL_EXEMPT_CALENDARS", EARMARKS)
         args = _parse(monkeypatch, ["--approval-exempt-calendars", "a@b.com"])
         assert args.approval_exempt_calendars == "a@b.com"
+
+
+class TestMainWiresSettingIntoConfig:
+    """main() must carry the parsed flag into the live Config, or the feature is
+    silently dead in production while every other test stays green."""
+
+    def test_main_sets_exempt_calendars_on_config(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("APPROVAL_EXEMPT_CALENDARS", raising=False)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "api-proxy",
+                "--api-keys-file",
+                str(tmp_path / "keys.json"),
+                "--token-file",
+                str(tmp_path / "token.json"),
+                "--approval-exempt-calendars",
+                f" {EARMARKS}, ",
+            ],
+        )
+        # No --web-confirm: that path mounts a router on the global app.
+        with patch("api_proxy.main.uvicorn.run") as mock_run:
+            assert main_mod.main() == 0
+        mock_run.assert_called_once()
+        assert get_config().approval_exempt_calendars == frozenset({EARMARKS})

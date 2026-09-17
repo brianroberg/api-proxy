@@ -853,7 +853,9 @@ What it does, and what it leaves alone:
   the request path after URL decoding — so `…%40group.calendar.google.com`
   and `…@group.calendar.google.com` are the same id. There is no substring,
   prefix or case-insensitive matching: an id that merely contains an exempt
-  id, or differs from one only in case, is not exempt.
+  id, or differs from one only in case, is not exempt. Entries in the setting
+  itself are taken verbatim, so write them with a plain `@`, not `%40` — a
+  `%40` entry pasted from a URL will never match.
 - Unset, empty or whitespace-only means no exemptions. Entries are trimmed
   and empty entries are ignored.
 - **Every bypassed write is logged** at INFO with the method, path, calendar
