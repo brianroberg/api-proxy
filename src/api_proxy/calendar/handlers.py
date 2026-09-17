@@ -194,12 +194,16 @@ async def handle_confirmation(
     ``calendar_id`` is passed only by the event write handlers (create /
     update / patch / delete). When it is one of the configured
     approval-exempt calendars the write skips the gate — see
-    ``_is_exempt_calendar_write`` — and the bypass is logged at INFO.
+    ``_is_exempt_calendar_write`` — and the bypass is logged at INFO. A
+    write whose ``sendUpdates`` would make the backend email the event's
+    attendees is outward communication, not bookkeeping on an agent-owned
+    calendar, so it never bypasses: it falls through to the gate like any
+    other write.
     """
     if not requires_confirmation(method, is_modify):
         return
 
-    if _is_exempt_calendar_write(is_modify, calendar_id):
+    if _is_exempt_calendar_write(is_modify, calendar_id) and not _sends_invitations(send_updates):
         key_name = getattr(request.state, "api_key_name", "unknown")
         logger.info(
             f"Approval bypassed for exempt calendar: {method} {path} "
@@ -259,8 +263,12 @@ def _is_exempt_calendar_write(is_modify: bool, calendar_id: str | None) -> bool:
     second decode could rewrite a legitimate id.
 
     Reads never qualify (``is_modify`` False), so in ALL mode a read on an
-    exempt calendar is still confirmed; only the event writes that pass
-    ``calendar_id`` can bypass.
+    exempt calendar is still confirmed. Note that the operative guard is the
+    call-site list — only the four event write handlers pass ``calendar_id``
+    at all, and every read handler leaves it ``None`` — so the ``is_modify``
+    check here is belt-and-braces for a future caller that passes both. It
+    is pinned by a direct-call test
+    (``test_handle_confirmation_never_exempts_a_non_modify_call``).
     """
     if not is_modify or calendar_id is None:
         return False

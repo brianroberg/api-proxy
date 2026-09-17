@@ -572,7 +572,7 @@ class TestApprovalExemptCalendars:
         ]
         assert len(bypass_logs) == 1, [r.getMessage() for r in caplog.records]
         message = bypass_logs[0].getMessage()
-        assert EARMARKS_ID in message
+        assert f"calendar_id={EARMARKS_ID}" in message
         assert method.upper() in message
 
     def test_url_encoded_calendar_id_matches_and_logs_decoded_id(
@@ -811,3 +811,115 @@ class TestApprovalExemptCalendars:
         assert response.status_code == 200
         mock_handler.confirm.assert_not_awaited()
         assert not [r for r in caplog.records if "bypass" in r.getMessage()]
+
+    @pytest.mark.parametrize(
+        ("method", "send_updates", "expect_bypass"),
+        [
+            pytest.param("delete", "all", False, id="delete-sendUpdates-all"),
+            pytest.param("delete", "externalOnly", False, id="delete-sendUpdates-externalOnly"),
+            pytest.param("patch", "all", False, id="patch-sendUpdates-all"),
+            pytest.param("put", "all", False, id="put-sendUpdates-all"),
+            pytest.param("delete", "none", True, id="delete-sendUpdates-none"),
+            pytest.param("patch", None, True, id="patch-no-sendUpdates"),
+        ],
+    )
+    def test_write_that_would_notify_attendees_still_queues(
+        self,
+        client,
+        auth_headers,
+        api_keys_file,
+        token_file,
+        mock_calendar_response,
+        caplog,
+        method,
+        send_updates,
+        expect_bypass,
+    ):
+        """The exemption covers bookkeeping on an agent-owned calendar, not
+        outward communication: a write whose sendUpdates would make Google
+        email the event's existing attendees is still confirmed even on an
+        exempt calendar. Without such a value the write bypasses as usual."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID})
+        existing_event = {
+            "id": "event1",
+            "summary": "Shared",
+            "start": {"dateTime": "2025-01-21T14:00:00-05:00"},
+            "end": {"dateTime": "2025-01-21T15:00:00-05:00"},
+            "attendees": [{"email": "guest@example.com", "responseStatus": "accepted"}],
+        }
+        url = f"/calendar/v3/calendars/{EARMARKS_ID}/events/event1"
+        if send_updates is not None:
+            url += f"?sendUpdates={send_updates}"
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+            caplog.at_level(logging.INFO, logger="api_proxy.calendar.handlers"),
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            mock_client.request.return_value = mock_calendar_response(200, existing_event)
+            kwargs = {} if method == "delete" else {"json": EVENT_BODY}
+            response = getattr(client, method)(url, headers=auth_headers, **kwargs)
+
+        bypass_logs = [r for r in caplog.records if "bypass" in r.getMessage()]
+        write_calls = [c for c in mock_client.request.await_args_list if c.args[0] != "GET"]
+        if expect_bypass:
+            assert response.status_code == 200
+            mock_handler.confirm.assert_not_awaited()
+            assert len(write_calls) == 1
+            assert len(bypass_logs) == 1
+        else:
+            assert response.status_code == 403
+            mock_handler.confirm.assert_awaited_once()
+            assert write_calls == []
+            assert bypass_logs == []
+
+    def test_percent_encoded_entry_in_setting_does_not_match(
+        self, client, auth_headers, api_keys_file, token_file
+    ):
+        """Entries are taken verbatim: a '%40' entry pasted from a URL does not
+        match the decoded '@' id the handler sees, so the write still queues."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID_ENCODED})
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        mock_handler.confirm.assert_awaited_once()
+        mock_client.request.assert_not_awaited()
+
+    async def test_handle_confirmation_never_exempts_a_non_modify_call(
+        self, api_keys_file, token_file
+    ):
+        """Direct call: even if a caller passed calendar_id for a read, is_modify=False
+        must keep the gate. The route handlers never do this (only the four event
+        write handlers pass calendar_id); this pins the parameter check itself."""
+        from fastapi import HTTPException
+
+        from api_proxy.calendar.handlers import handle_confirmation
+
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID}, mode=ConfirmationMode.ALL)
+        request = MagicMock()
+        request.query_params = {}
+        request.state.api_key_name = "test-key"
+        with patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler:
+            mock_handler = AsyncMock()
+            mock_handler.confirm = AsyncMock(return_value=ConfirmationOutcome.REJECTED)
+            mock_get_handler.return_value = mock_handler
+            with pytest.raises(HTTPException) as exc_info:
+                await handle_confirmation(
+                    request,
+                    "GET",
+                    f"/calendars/{EARMARKS_ID}/events",
+                    is_modify=False,
+                    calendar_id=EARMARKS_ID,
+                )
+
+        assert exc_info.value.status_code == 403
+        mock_handler.confirm.assert_awaited_once()

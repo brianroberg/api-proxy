@@ -847,8 +847,11 @@ What it does, and what it leaves alone:
   `--confirm-all` mode.
 - **Not covered:** writes to any calendar not in the list (they queue exactly
   as before); reads, which in `--confirm-all` mode are still confirmed even on
-  an exempt calendar; and the RSVP endpoint (`…/respond`), which stays gated
-  on every calendar because a response is visible to the event's organizer.
+  an exempt calendar; the RSVP endpoint (`…/respond`), which stays gated
+  on every calendar because a response is visible to the event's organizer;
+  and writes that would notify attendees — a `PUT`, `PATCH` or `DELETE` with
+  `sendUpdates=all` or `sendUpdates=externalOnly` still queues, because the
+  backend would email the event's existing attendees.
 - **Matching is exact-string equality** on the calendar id as it appears in
   the request path after URL decoding — so `…%40group.calendar.google.com`
   and `…@group.calendar.google.com` are the same id. There is no substring,
