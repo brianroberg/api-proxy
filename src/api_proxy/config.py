@@ -47,9 +47,30 @@ class Config:
     # Falls back to http://{host}:{port} when unset.
     external_base_url: str | None = None
 
+    # Calendars whose event writes (create/update/patch/delete) bypass the
+    # approval queue. Matched by exact string equality against the decoded
+    # calendarId path parameter; empty = no exemptions. Set from the
+    # APPROVAL_EXEMPT_CALENDARS environment variable or
+    # --approval-exempt-calendars, i.e. deployment config the calling agent
+    # cannot edit. Every bypassed write is logged at INFO (see
+    # calendar/handlers.py handle_confirmation).
+    approval_exempt_calendars: frozenset[str] = frozenset()
+
     # API base URLs
     gmail_api_base_url: str = "https://gmail.googleapis.com"
     calendar_api_base_url: str = "https://www.googleapis.com/calendar/v3"
+
+
+def parse_exempt_calendars(raw: str | None) -> frozenset[str]:
+    """
+    Parse the APPROVAL_EXEMPT_CALENDARS value: comma-separated calendar ids,
+    whitespace-trimmed, empty entries dropped. None, empty and whitespace-only
+    input all yield no exemptions. Ids are kept verbatim — no case folding or
+    URL decoding — because matching is exact-string equality.
+    """
+    if not raw:
+        return frozenset()
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
 # Global config instance, set during startup

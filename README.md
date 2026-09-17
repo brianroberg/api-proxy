@@ -824,6 +824,52 @@ Allow this request? [y/N]:
 - Confirmation prompts are synchronous—only one pending at a time
 - Default timeout is 5 minutes (configurable via `--confirmation-timeout`)
 
+### Approval-Exempt Calendars
+
+A calendar can be designated as agent-owned so that event writes on it skip
+the confirmation gate while every other calendar keeps it. Set
+`APPROVAL_EXEMPT_CALENDARS` (or `--approval-exempt-calendars`) to a
+comma-separated list of calendar ids:
+
+```bash
+APPROVAL_EXEMPT_CALENDARS="c_dee6…bf@group.calendar.google.com" uv run api-proxy --web-confirm
+```
+
+This is proxy deployment configuration, deliberately outside the calling
+agent's reach: an agent can only widen its own write scope by asking an
+operator to change this setting.
+
+What it does, and what it leaves alone:
+
+- **Covered:** `POST`, `PUT`, `PATCH` and `DELETE` on
+  `/calendar/v3/calendars/{calendarId}/events…` when `{calendarId}` is in the
+  list. These run without a confirmation prompt in both `--confirm-modify` and
+  `--confirm-all` mode.
+- **Not covered:** writes to any calendar not in the list (they queue exactly
+  as before); reads, which in `--confirm-all` mode are still confirmed even on
+  an exempt calendar; the RSVP endpoint (`…/respond`), which stays gated
+  on every calendar because a response is visible to the event's organizer;
+  and writes that would notify attendees — a `PUT`, `PATCH` or `DELETE` with
+  `sendUpdates=all` or `sendUpdates=externalOnly` still queues, because the
+  backend would email the event's existing attendees.
+- **Matching is exact-string equality** on the calendar id as it appears in
+  the request path after URL decoding — so `…%40group.calendar.google.com`
+  and `…@group.calendar.google.com` are the same id. There is no substring,
+  prefix or case-insensitive matching: an id that merely contains an exempt
+  id, or differs from one only in case, is not exempt. Entries in the setting
+  itself are taken verbatim, so write them with a plain `@`, not `%40` — a
+  `%40` entry pasted from a URL will never match.
+- Unset, empty or whitespace-only means no exemptions. Entries are trimmed
+  and empty entries are ignored.
+- **Every bypassed write is logged** at INFO with the method, path, calendar
+  id and API key name, e.g.
+  `Approval bypassed for exempt calendar: POST /calendars/<id>/events calendar_id=<id> (key: calendar-agent)`.
+  The resolved list is also logged once at startup. In `--no-confirm` mode
+  nothing is gated, so no bypass line is written.
+
+If the setting is misread or missing, the failure direction is the previous
+behaviour: everything queues for approval.
+
 ### Confirmation Timeouts and Client Timeouts
 
 The confirmation window must stay **strictly shorter** than the mutation
@@ -1026,6 +1072,7 @@ uv run api-proxy [OPTIONS]
 | `--confirmation-timeout` | `300` | Timeout for confirmation prompts (seconds). Must stay shorter than every client's mutation timeout — see [Confirmation Timeouts and Client Timeouts](#confirmation-timeouts-and-client-timeouts) |
 | `--ntfy-url` | `https://ntfy.robergb.net/alerts-agent` | ntfy topic URL for approval notifications (sent only in web-confirmation mode with `NTFY_TOKEN` set) |
 | `--external-base-url` | `http://HOST:PORT` | Externally reachable base URL used for the dashboard link in approval notifications |
+| `--approval-exempt-calendars` | (none) | Comma-separated calendar ids whose event writes bypass the approval gate — see [Approval-Exempt Calendars](#approval-exempt-calendars) |
 | `--reload` | - | Enable auto-reload for development |
 | `--log-file` | - | Write logs to file (in addition to console) |
 
@@ -1036,6 +1083,7 @@ uv run api-proxy [OPTIONS]
 | `API_KEYS_FILE` | Path to API keys file (alternative to `--api-keys-file`) |
 | `NTFY_TOKEN` | Bearer token for approval notifications via ntfy. Unset disables notifications. Never logged or echoed |
 | `EXTERNAL_BASE_URL` | Externally reachable base URL for the dashboard deep link in approval notifications (alternative to `--external-base-url`; the flag wins when both are set). Blank counts as unset |
+| `APPROVAL_EXEMPT_CALENDARS` | Comma-separated calendar ids whose event writes (create/update/patch/delete) bypass the approval gate; exact-id match after URL decoding (alternative to `--approval-exempt-calendars`; the flag wins when both are set). Blank counts as unset — no exemptions. See [Approval-Exempt Calendars](#approval-exempt-calendars) |
 
 ## Development
 
@@ -1099,6 +1147,7 @@ The proxy logs:
 - Authentication failures (WARNING level)
 - Blocked operation attempts (WARNING level)
 - Confirmation decisions (INFO level)
+- Approval bypasses for exempt calendars, with the calendar id (INFO level)
 
 Sensitive data is **never** logged:
 - Full API keys (only name or last 4 characters)

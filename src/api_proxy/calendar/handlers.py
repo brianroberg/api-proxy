@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from api_proxy.auth import verify_api_key
 from api_proxy.calendar.client import get_calendar_client
 from api_proxy.calendar.models import EventRequest, RespondRequest
+from api_proxy.config import get_config
 from api_proxy.confirmation import (
     ConfirmationOutcome,
     ConfirmationRequest,
@@ -184,12 +185,30 @@ async def handle_confirmation(
     event_start: str | None = None,
     event_end: str | None = None,
     rsvp_response: str | None = None,
+    calendar_id: str | None = None,
 ) -> None:
     """
     Handle confirmation if required. Raises HTTPException if rejected or if
     the confirmation window expired with no operator response.
+
+    ``calendar_id`` is passed only by the event write handlers (create /
+    update / patch / delete). When it is one of the configured
+    approval-exempt calendars the write skips the gate — see
+    ``_is_exempt_calendar_write`` — and the bypass is logged at INFO. A
+    write whose ``sendUpdates`` would make the backend email the event's
+    attendees is outward communication, not bookkeeping on an agent-owned
+    calendar, so it never bypasses: it falls through to the gate like any
+    other write.
     """
     if not requires_confirmation(method, is_modify):
+        return
+
+    if _is_exempt_calendar_write(is_modify, calendar_id) and not _sends_invitations(send_updates):
+        key_name = getattr(request.state, "api_key_name", "unknown")
+        logger.info(
+            f"Approval bypassed for exempt calendar: {method} {path} "
+            f"calendar_id={calendar_id} (key: {key_name})"
+        )
         return
 
     handler = get_confirmation_handler()
@@ -227,6 +246,33 @@ async def handle_confirmation(
         status_code=403,
         detail={"error": "forbidden", "message": "Request rejected by operator"},
     )
+
+
+def _is_exempt_calendar_write(is_modify: bool, calendar_id: str | None) -> bool:
+    """
+    Whether this modifying operation targets an approval-exempt calendar.
+
+    Exact string equality against ``Config.approval_exempt_calendars``: no
+    case folding, no substring matching, no URL decoding here. The value
+    compared is the ``calendarId`` path parameter as the route handler
+    received it, which Starlette has already percent-decoded (a still-encoded
+    ``%40`` would fail ``validate_calendar_id`` before reaching this point),
+    so a request written as ``...%40group.calendar.google.com`` matches the
+    decoded id in the configured list. Decoding again would be wrong:
+    ``CALENDAR_ID_PATTERN`` admits a literal ``%`` in the local part, so a
+    second decode could rewrite a legitimate id.
+
+    Reads never qualify (``is_modify`` False), so in ALL mode a read on an
+    exempt calendar is still confirmed. Note that the operative guard is the
+    call-site list — only the four event write handlers pass ``calendar_id``
+    at all, and every read handler leaves it ``None`` — so the ``is_modify``
+    check here is belt-and-braces for a future caller that passes both. It
+    is pinned by a direct-call test
+    (``test_handle_confirmation_never_exempts_a_non_modify_call``).
+    """
+    if not is_modify or calendar_id is None:
+        return False
+    return calendar_id in get_config().approval_exempt_calendars
 
 
 def _sends_invitations(send_updates: str | None) -> bool:
@@ -504,6 +550,7 @@ async def create_event(
         send_updates=sendUpdates if _sends_invitations(sendUpdates) else None,
         event_start=_format_event_datetime(body.start),
         event_end=_format_event_datetime(body.end),
+        calendar_id=calendar_id,
     )
 
     params = {}
@@ -568,6 +615,7 @@ async def update_event(
         send_updates=sendUpdates if _sends_invitations(sendUpdates) else None,
         event_start=_format_event_datetime(body.start),
         event_end=_format_event_datetime(body.end),
+        calendar_id=calendar_id,
     )
 
     params = {}
@@ -627,6 +675,7 @@ async def patch_event(
         send_updates=sendUpdates if _sends_invitations(sendUpdates) else None,
         event_start=_format_event_datetime(body.start),
         event_end=_format_event_datetime(body.end),
+        calendar_id=calendar_id,
     )
 
     params = {}
@@ -684,7 +733,8 @@ async def delete_event(
     else:
         logger.warning(f"Failed to fetch event metadata: {response.status_code}")
 
-    # DELETE always requires confirmation (is_modify=True)
+    # DELETE is confirmed like every other event write (is_modify=True),
+    # subject to the per-calendar exemption.
     await handle_confirmation(
         request,
         "DELETE",
@@ -694,6 +744,7 @@ async def delete_event(
         send_updates=sendUpdates,
         event_start=event_start,
         event_end=event_end,
+        calendar_id=calendar_id,
     )
 
     params = {}

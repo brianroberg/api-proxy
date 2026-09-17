@@ -100,6 +100,8 @@ uv run pytest tests/test_security.py -v
 ### Modifying Confirmation Behavior
 
 - Mode logic: `confirmation.py` → `requires_confirmation()`
+- Per-calendar exemption (`APPROVAL_EXEMPT_CALENDARS`): `calendar/handlers.py` →
+  `handle_confirmation()` / `_is_exempt_calendar_write()`; parsing in `config.py`
 - Prompt formatting: `confirmation.py` → `_format_prompt()`
 - CLI args: `main.py` → `parse_args()`
 

@@ -1,9 +1,11 @@
 """Security tests for Google Calendar API proxy."""
 
-from unittest.mock import AsyncMock, patch
+import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from api_proxy.config import Config, ConfirmationMode, set_config
 from api_proxy.confirmation import ConfirmationOutcome
 
 
@@ -495,3 +497,429 @@ class TestCalendarBypassAttempts:
 
         # Should work with trailing slash (normalized) or redirect
         assert response.status_code in [200, 307]  # 307 is redirect without trailing slash
+
+
+# =============================================================================
+# PER-CALENDAR APPROVAL EXEMPTION (issue #16)
+# =============================================================================
+
+EARMARKS_ID = (
+    "c_dee653a1a8d29be6243468773c8c7909bd3936ac2ff477fad3dd3852b3eeb6bf@group.calendar.google.com"
+)
+EARMARKS_ID_ENCODED = EARMARKS_ID.replace("@", "%40")
+
+EXEMPT_EVENT_MUTATIONS = [
+    pytest.param("post", f"/calendar/v3/calendars/{EARMARKS_ID}/events", id="create"),
+    pytest.param("put", f"/calendar/v3/calendars/{EARMARKS_ID}/events/event1", id="update"),
+    pytest.param("patch", f"/calendar/v3/calendars/{EARMARKS_ID}/events/event1", id="patch"),
+    pytest.param("delete", f"/calendar/v3/calendars/{EARMARKS_ID}/events/event1", id="delete"),
+]
+
+
+def _exempt_config(api_keys_file, token_file, exempt, mode=ConfirmationMode.MODIFY):
+    """Set a config with the given confirmation mode and exempt-calendar set."""
+    config = Config(
+        api_keys_file=api_keys_file,
+        token_file=token_file,
+        confirmation_mode=mode,
+        confirmation_timeout=1.0,
+        approval_exempt_calendars=frozenset(exempt),
+    )
+    set_config(config)
+    return config
+
+
+def _gating_mocks(mock_get_client, mock_get_handler, outcome=ConfirmationOutcome.REJECTED):
+    """Backend client mock plus a confirmation handler mock returning ``outcome``."""
+    mock_client = AsyncMock()
+    mock_client.request.return_value = MagicMock(status_code=200, json=lambda: {"id": "e"})
+    mock_get_client.return_value = mock_client
+    mock_handler = AsyncMock()
+    mock_handler.confirm = AsyncMock(return_value=outcome)
+    mock_get_handler.return_value = mock_handler
+    return mock_client, mock_handler
+
+
+class TestApprovalExemptCalendars:
+    """Writes to a calendar in APPROVAL_EXEMPT_CALENDARS skip the approval gate;
+    everything else still queues exactly as before."""
+
+    @pytest.mark.parametrize(("method", "url"), EXEMPT_EVENT_MUTATIONS)
+    def test_write_to_exempt_calendar_bypasses_and_is_logged(
+        self, client, auth_headers, api_keys_file, token_file, caplog, method, url
+    ):
+        """Every write on the exempt calendar runs without consulting the gate,
+        and the bypass is logged at INFO with the calendar id and method."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID})
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+            caplog.at_level(logging.INFO, logger="api_proxy.calendar.handlers"),
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            kwargs = {} if method == "delete" else {"json": EVENT_BODY}
+            response = getattr(client, method)(url, headers=auth_headers, **kwargs)
+
+        assert response.status_code == 200
+        mock_handler.confirm.assert_not_awaited()
+        # DELETE reads the event first, then deletes; the others write once.
+        expected_calls = 2 if method == "delete" else 1
+        assert mock_client.request.await_count == expected_calls
+        assert mock_client.request.await_args_list[-1].args[0] == method.upper()
+
+        bypass_logs = [
+            r for r in caplog.records if r.levelno == logging.INFO and "bypass" in r.getMessage()
+        ]
+        assert len(bypass_logs) == 1, [r.getMessage() for r in caplog.records]
+        message = bypass_logs[0].getMessage()
+        assert f"calendar_id={EARMARKS_ID}" in message
+        assert method.upper() in message
+
+    def test_url_encoded_calendar_id_matches_and_logs_decoded_id(
+        self, client, auth_headers, api_keys_file, token_file, caplog
+    ):
+        """A request with '@' percent-encoded still matches the decoded exempt id,
+        and the audit line carries the canonical (decoded) id."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID})
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+            caplog.at_level(logging.INFO, logger="api_proxy.calendar.handlers"),
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                f"/calendar/v3/calendars/{EARMARKS_ID_ENCODED}/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        mock_handler.confirm.assert_not_awaited()
+        mock_client.request.assert_awaited_once()
+        bypass_logs = [r.getMessage() for r in caplog.records if "bypass" in r.getMessage()]
+        assert len(bypass_logs) == 1
+        assert EARMARKS_ID in bypass_logs[0]
+        assert EARMARKS_ID_ENCODED not in bypass_logs[0]
+
+    def test_primary_write_still_queues_when_exempt_list_set(
+        self, client, auth_headers, api_keys_file, token_file
+    ):
+        """The guard against over-broad matching: with Earmarks exempt, a write to
+        the primary calendar is still gated and a rejection still blocks it."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID})
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                "/calendar/v3/calendars/primary/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        assert response.json()["error"] == "forbidden"
+        mock_handler.confirm.assert_awaited_once()
+        mock_client.request.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "calendar_id",
+        [
+            pytest.param("x" + EARMARKS_ID, id="superstring-of-exempt-id"),
+            pytest.param(EARMARKS_ID.removeprefix("c_"), id="substring-of-exempt-id"),
+            pytest.param(EARMARKS_ID.upper(), id="case-variant"),
+        ],
+    )
+    def test_near_miss_calendar_ids_do_not_bypass(
+        self, client, auth_headers, api_keys_file, token_file, calendar_id
+    ):
+        """Matching is exact-string equality: ids that merely contain, are
+        contained in, or differ only in case from an exempt id still queue."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID})
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                f"/calendar/v3/calendars/{calendar_id}/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        mock_handler.confirm.assert_awaited_once()
+        mock_client.request.assert_not_awaited()
+
+    def test_exempt_entry_does_not_match_superstring_configured(
+        self, client, auth_headers, api_keys_file, token_file
+    ):
+        """The other direction: an exempt entry that is a superstring of the
+        requested id does not exempt the shorter id."""
+        _exempt_config(api_keys_file, token_file, {"x" + EARMARKS_ID})
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        mock_handler.confirm.assert_awaited_once()
+        mock_client.request.assert_not_awaited()
+
+    def test_empty_exempt_list_gates_every_calendar(
+        self, client, auth_headers, api_keys_file, token_file
+    ):
+        """With no exemptions configured, a write to the Earmarks id queues as today."""
+        _exempt_config(api_keys_file, token_file, set())
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        mock_handler.confirm.assert_awaited_once()
+        mock_client.request.assert_not_awaited()
+
+    def test_rsvp_on_exempt_calendar_still_gated(
+        self, client, auth_headers, api_keys_file, token_file, mock_calendar_response
+    ):
+        """/respond is not a create/update/delete: an RSVP is visible to the
+        organizer, so it keeps the gate even on an exempt calendar."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID})
+        event = {
+            "id": "event1",
+            "summary": "Invite",
+            "attendees": [{"email": "robergb@dm.org", "responseStatus": "needsAction"}],
+        }
+        primary = {"id": "robergb@dm.org"}
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            mock_client.request.side_effect = [
+                mock_calendar_response(200, event),
+                mock_calendar_response(200, primary),
+                mock_calendar_response(200, event),
+            ]
+            response = client.post(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events/event1/respond",
+                json={"responseStatus": "accepted"},
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        mock_handler.confirm.assert_awaited_once()
+        # Only the two reads happened; the PATCH never did.
+        assert [c.args[0] for c in mock_client.request.await_args_list] == ["GET", "GET"]
+
+    def test_read_on_exempt_calendar_unaffected_in_modify_mode(
+        self, client, auth_headers, api_keys_file, token_file, mock_calendar_response, caplog
+    ):
+        """Reads never consulted the gate in MODIFY mode; they still don't, and
+        no bypass line is logged for them."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID})
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+            caplog.at_level(logging.INFO, logger="api_proxy.calendar.handlers"),
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            mock_client.request.return_value = mock_calendar_response(200, {"items": []})
+            response = client.get(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events",
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        mock_handler.confirm.assert_not_awaited()
+        assert not [r for r in caplog.records if "bypass" in r.getMessage()]
+
+    def test_read_on_exempt_calendar_still_confirms_in_all_mode(
+        self, client, auth_headers, api_keys_file, token_file
+    ):
+        """The exemption is for writes only: in ALL mode a read on the exempt
+        calendar is still gated."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID}, mode=ConfirmationMode.ALL)
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.get(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events",
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        mock_handler.confirm.assert_awaited_once()
+        mock_client.request.assert_not_awaited()
+
+    def test_write_to_exempt_calendar_bypasses_in_all_mode(
+        self, client, auth_headers, api_keys_file, token_file
+    ):
+        """The per-calendar exemption is the more specific setting and wins over
+        ALL mode for writes on that calendar."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID}, mode=ConfirmationMode.ALL)
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        mock_handler.confirm.assert_not_awaited()
+        mock_client.request.assert_awaited_once()
+
+    def test_no_bypass_log_in_none_mode(
+        self, client, auth_headers, api_keys_file, token_file, caplog
+    ):
+        """In NONE mode nothing is gated, so nothing is 'bypassed' and the audit
+        line is not emitted (it must mean 'the gate was skipped', not 'the
+        calendar is exempt')."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID}, mode=ConfirmationMode.NONE)
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+            caplog.at_level(logging.INFO, logger="api_proxy.calendar.handlers"),
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 200
+        mock_handler.confirm.assert_not_awaited()
+        assert not [r for r in caplog.records if "bypass" in r.getMessage()]
+
+    @pytest.mark.parametrize(
+        ("method", "send_updates", "expect_bypass"),
+        [
+            pytest.param("delete", "all", False, id="delete-sendUpdates-all"),
+            pytest.param("delete", "externalOnly", False, id="delete-sendUpdates-externalOnly"),
+            pytest.param("patch", "all", False, id="patch-sendUpdates-all"),
+            pytest.param("put", "all", False, id="put-sendUpdates-all"),
+            pytest.param("delete", "none", True, id="delete-sendUpdates-none"),
+            pytest.param("patch", None, True, id="patch-no-sendUpdates"),
+        ],
+    )
+    def test_write_that_would_notify_attendees_still_queues(
+        self,
+        client,
+        auth_headers,
+        api_keys_file,
+        token_file,
+        mock_calendar_response,
+        caplog,
+        method,
+        send_updates,
+        expect_bypass,
+    ):
+        """The exemption covers bookkeeping on an agent-owned calendar, not
+        outward communication: a write whose sendUpdates would make Google
+        email the event's existing attendees is still confirmed even on an
+        exempt calendar. Without such a value the write bypasses as usual."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID})
+        existing_event = {
+            "id": "event1",
+            "summary": "Shared",
+            "start": {"dateTime": "2025-01-21T14:00:00-05:00"},
+            "end": {"dateTime": "2025-01-21T15:00:00-05:00"},
+            "attendees": [{"email": "guest@example.com", "responseStatus": "accepted"}],
+        }
+        url = f"/calendar/v3/calendars/{EARMARKS_ID}/events/event1"
+        if send_updates is not None:
+            url += f"?sendUpdates={send_updates}"
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+            caplog.at_level(logging.INFO, logger="api_proxy.calendar.handlers"),
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            mock_client.request.return_value = mock_calendar_response(200, existing_event)
+            kwargs = {} if method == "delete" else {"json": EVENT_BODY}
+            response = getattr(client, method)(url, headers=auth_headers, **kwargs)
+
+        bypass_logs = [r for r in caplog.records if "bypass" in r.getMessage()]
+        write_calls = [c for c in mock_client.request.await_args_list if c.args[0] != "GET"]
+        if expect_bypass:
+            assert response.status_code == 200
+            mock_handler.confirm.assert_not_awaited()
+            assert len(write_calls) == 1
+            assert len(bypass_logs) == 1
+        else:
+            assert response.status_code == 403
+            mock_handler.confirm.assert_awaited_once()
+            assert write_calls == []
+            assert bypass_logs == []
+
+    def test_percent_encoded_entry_in_setting_does_not_match(
+        self, client, auth_headers, api_keys_file, token_file
+    ):
+        """Entries are taken verbatim: a '%40' entry pasted from a URL does not
+        match the decoded '@' id the handler sees, so the write still queues."""
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID_ENCODED})
+        with (
+            patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client,
+            patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler,
+        ):
+            mock_client, mock_handler = _gating_mocks(mock_get_client, mock_get_handler)
+            response = client.post(
+                f"/calendar/v3/calendars/{EARMARKS_ID}/events",
+                json=EVENT_BODY,
+                headers=auth_headers,
+            )
+
+        assert response.status_code == 403
+        mock_handler.confirm.assert_awaited_once()
+        mock_client.request.assert_not_awaited()
+
+    async def test_handle_confirmation_never_exempts_a_non_modify_call(
+        self, api_keys_file, token_file
+    ):
+        """Direct call: even if a caller passed calendar_id for a read, is_modify=False
+        must keep the gate. The route handlers never do this (only the four event
+        write handlers pass calendar_id); this pins the parameter check itself."""
+        from fastapi import HTTPException
+
+        from api_proxy.calendar.handlers import handle_confirmation
+
+        _exempt_config(api_keys_file, token_file, {EARMARKS_ID}, mode=ConfirmationMode.ALL)
+        request = MagicMock()
+        request.query_params = {}
+        request.state.api_key_name = "test-key"
+        with patch("api_proxy.calendar.handlers.get_confirmation_handler") as mock_get_handler:
+            mock_handler = AsyncMock()
+            mock_handler.confirm = AsyncMock(return_value=ConfirmationOutcome.REJECTED)
+            mock_get_handler.return_value = mock_handler
+            with pytest.raises(HTTPException) as exc_info:
+                await handle_confirmation(
+                    request,
+                    "GET",
+                    f"/calendars/{EARMARKS_ID}/events",
+                    is_modify=False,
+                    calendar_id=EARMARKS_ID,
+                )
+
+        assert exc_info.value.status_code == 403
+        mock_handler.confirm.assert_awaited_once()
