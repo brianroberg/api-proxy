@@ -102,22 +102,12 @@ def extract_endpoints_from_readme() -> set[tuple[str, str]]:
 
 
 def get_blocked_operations_from_code() -> set[str]:
-    """Extract blocked operation paths from code."""
-    main_file = PROJECT_ROOT / "src" / "api_proxy" / "main.py"
-    content = main_file.read_text()
+    """The live blocklist. Imported rather than regex-scraped from main.py: a
+    scrape stops matching after a harmless edit (a type annotation on the
+    assignment) and the parity test below then ran zero subtests and passed."""
+    from api_proxy.main import BLOCKED_PATHS
 
-    blocked = set()
-
-    # Find BLOCKED_PATHS list
-    match = re.search(r"BLOCKED_PATHS\s*=\s*\[(.*?)\]", content, re.DOTALL)
-    if match:
-        paths_str = match.group(1)
-        # Extract individual paths
-        path_pattern = re.compile(r'"([^"]+)"')
-        for path_match in path_pattern.finditer(paths_str):
-            blocked.add(path_match.group(1))
-
-    return blocked
+    return set(BLOCKED_PATHS)
 
 
 def get_blocked_operations_from_readme() -> set[str]:
@@ -197,6 +187,7 @@ class TestBlockedOperationsDocumentation:
 
         readme_content = readme_file.read_text()
         blocked_paths = get_blocked_operations_from_code()
+        assert blocked_paths, "found no blocked operations to check"
 
         for path in blocked_paths:
             with subtests.test(path=path):
