@@ -286,3 +286,64 @@ class TestErrorHandling:
             await client.request("GET", "/gmail/v1/users/me/messages")
 
         await client.close()
+
+
+class TestRefreshOnUnauthorizedEndToEnd:
+    """The 401 -> refresh -> persist -> retry path on a real GmailClient and a
+    real token file. test_retries_on_401_with_refreshed_token mocks out the
+    refresh it is named for and never looks at the retried request, so a retry
+    that replayed an empty token, or refreshed tokens that were never saved
+    (every restart then begins stale), passed. Only Google's own
+    Credentials.refresh is patched: it goes through `requests`, which
+    pytest-httpx cannot intercept."""
+
+    def _refresh_to(self, token):
+        def refresh(creds, request):
+            creds.token = token
+
+        return refresh
+
+    async def test_retry_sends_the_refreshed_token_and_persists_it(
+        self, test_config, token_file, httpx_mock
+    ):
+        from api_proxy.gmail.client import GmailClient
+
+        url = "https://gmail.googleapis.com/gmail/v1/users/me/labels"
+        httpx_mock.add_response(method="GET", url=url, status_code=401, json={})
+        httpx_mock.add_response(method="GET", url=url, json={"labels": []})
+        client = GmailClient()
+        try:
+            with patch(
+                "google.oauth2.credentials.Credentials.refresh", self._refresh_to("fresh-token")
+            ):
+                response = await client.request("GET", "/gmail/v1/users/me/labels")
+        finally:
+            await client.close()
+
+        assert response.status_code == 200
+        assert [r.headers["Authorization"] for r in httpx_mock.get_requests()] == [
+            "Bearer mock_access_token",
+            "Bearer fresh-token",
+        ]
+        saved = json.loads(token_file.read_text())
+        assert saved["token"] == "fresh-token"
+        assert saved["refresh_token"] == "mock_refresh_token"
+
+    async def test_a_failed_refresh_returns_the_401_without_retrying(self, test_config, httpx_mock):
+        from api_proxy.gmail.client import GmailClient
+
+        url = "https://gmail.googleapis.com/gmail/v1/users/me/labels"
+        httpx_mock.add_response(method="GET", url=url, status_code=401, json={})
+
+        def fail(creds, request):
+            raise RuntimeError("refresh refused")
+
+        client = GmailClient()
+        try:
+            with patch("google.oauth2.credentials.Credentials.refresh", fail):
+                response = await client.request("GET", "/gmail/v1/users/me/labels")
+        finally:
+            await client.close()
+
+        assert response.status_code == 401
+        assert len(httpx_mock.get_requests()) == 1
