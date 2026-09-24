@@ -451,3 +451,22 @@ class TestDashboardStream:
         while not events.empty():
             kinds.append(events.get_nowait())
         assert kinds[-1] == {"event": "request_timeout", "pending": []}
+
+
+class TestCancelledWaitIsCleanedUp:
+    @pytest.mark.xfail(
+        strict=True, reason="api-proxy #20: a cancelled wait leaves an orphaned queue entry"
+    )
+    async def test_cancelled_wait_leaves_nothing_pending(self, web_queue, config_web_confirm):
+        """If the coroutine waiting for a decision is cancelled (server shutdown,
+        or a caller-side timeout around confirm()), its entry must leave the
+        queue, as the timeout path does. Otherwise the dashboard keeps a card,
+        and an approval push, for a request nobody is waiting on; approving
+        it then fails, and the entry never expires."""
+        task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+        await asyncio.sleep(0.05)
+        assert len(web_queue.get_pending_sync()) == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert web_queue.get_pending_sync() == []
