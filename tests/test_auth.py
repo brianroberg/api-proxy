@@ -1,6 +1,9 @@
 """Tests for API key authentication."""
 
 import json
+import logging
+
+from api_proxy.auth import APIKeyManager
 
 
 class TestValidAuthentication:
@@ -128,3 +131,83 @@ class TestEdgeCases:
         data = response.json()
         assert data["status"] == "ok"
         assert "version" in data
+
+
+LABELS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/labels"
+
+
+class TestKeysFileIsReloadedPerRequest:
+    """Invariant 2: the keys file is re-read on every request, so disabling or
+    revoking a key cuts an agent off at once, and a new key works at once. No
+    test changed the file between two requests, so caching the parsed keys for
+    the life of the process passed the whole suite."""
+
+    def _ok(self, client, headers):
+        return client.get("/gmail/v1/users/me/labels", headers=headers).status_code
+
+    def test_disable_takes_effect_without_restart(
+        self, client, auth_headers, api_keys_file, httpx_mock
+    ):
+        httpx_mock.add_response(url=LABELS_URL, json={"labels": []})
+        assert self._ok(client, auth_headers) == 200
+        assert APIKeyManager(api_keys_file).set_enabled("test-key", False) is True
+
+        response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+        assert response.status_code == 403
+        assert response.json() == {"error": "auth_error", "message": "API key is disabled"}
+
+    def test_revoke_takes_effect_without_restart(
+        self, client, auth_headers, api_keys_file, httpx_mock
+    ):
+        httpx_mock.add_response(url=LABELS_URL, json={"labels": []})
+        assert self._ok(client, auth_headers) == 200
+        assert APIKeyManager(api_keys_file).revoke_key("test-key") is True
+
+        response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+        assert response.status_code == 401
+        assert response.json() == {"error": "auth_error", "message": "Invalid API key"}
+
+    def test_a_key_created_after_startup_is_accepted(
+        self, client, auth_headers, api_keys_file, httpx_mock
+    ):
+        httpx_mock.add_response(url=LABELS_URL, json={"labels": []}, is_reusable=True)
+        assert self._ok(client, auth_headers) == 200
+        new_key = APIKeyManager(api_keys_file).create_key("late-agent")
+
+        assert self._ok(client, {"Authorization": f"Bearer {new_key}"}) == 200
+
+
+class TestErrorsNeverLeakKeys:
+    """Invariant 4: errors never leak API keys. The 401/403 tests matched a
+    substring of the message, so echoing the key into the body passed, and no
+    test looked at what the auth path logs (a persistent --log-file)."""
+
+    UNKNOWN_KEY = "aproxy_" + "u" * 32
+
+    def test_unknown_key_body_is_exact_and_does_not_echo_the_key(self, client):
+        response = client.get(
+            "/gmail/v1/users/me/labels",
+            headers={"Authorization": f"Bearer {self.UNKNOWN_KEY}"},
+        )
+        assert response.status_code == 401
+        assert response.json() == {"error": "auth_error", "message": "Invalid API key"}
+        assert self.UNKNOWN_KEY not in response.text
+
+    def test_disabled_key_body_is_exact_and_does_not_echo_the_key(self, client, disabled_api_key):
+        response = client.get(
+            "/gmail/v1/users/me/labels",
+            headers={"Authorization": f"Bearer {disabled_api_key}"},
+        )
+        assert response.status_code == 403
+        assert response.json() == {"error": "auth_error", "message": "API key is disabled"}
+        assert disabled_api_key not in response.text
+
+    def test_rejected_keys_are_never_logged_in_full(self, client, disabled_api_key, caplog):
+        caplog.set_level(logging.DEBUG, logger="api_proxy")
+        for key in (self.UNKNOWN_KEY, disabled_api_key):
+            client.get("/gmail/v1/users/me/labels", headers={"Authorization": f"Bearer {key}"})
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert self.UNKNOWN_KEY not in logged
+        assert disabled_api_key not in logged
+        # The documented behaviour is a short prefix, enough to tell keys apart.
+        assert self.UNKNOWN_KEY[:10] in logged
