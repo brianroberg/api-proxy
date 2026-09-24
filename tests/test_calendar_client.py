@@ -314,3 +314,23 @@ class TestRefreshOnUnauthorizedEndToEnd:
         )
         assert "sendUpdates=none" in str(retry.url)
         assert json.loads(token_file.read_text())["token"] == "fresh-token"
+
+
+async def test_an_expired_token_whose_refresh_fails_is_an_auth_failure(test_config):
+    """An expired token is refreshed before use. If that refresh fails, the
+    request must fail as a backend auth error, not go out with the stale token."""
+    import datetime
+
+    client = CalendarClient()
+    try:
+        creds = client._get_credentials()
+        creds.expiry = datetime.datetime(2000, 1, 1)
+
+        def fail(creds, request):
+            raise RuntimeError("refresh refused")
+
+        with patch("google.oauth2.credentials.Credentials.refresh", fail):
+            with pytest.raises(RuntimeError, match="Backend authentication failed"):
+                await client.request("GET", "/calendars/primary/events")
+    finally:
+        await client.close()

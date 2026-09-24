@@ -14,8 +14,11 @@
   reject (a misnamed keyword) fails instead of passing against a bare AsyncMock.
 """
 
+import inspect
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
+from urllib.parse import unquote
 
+import httpx
 import pytest
 
 from api_proxy.calendar.client import CalendarClient
@@ -117,6 +120,7 @@ BAD_IDS = [
     pytest.param("get", "/calendar/v3/calendars/bad/events", id="calendar-not-email"),
     pytest.param("post", "/calendar/v3/calendars/a%20b@x.com/events", id="calendar-space"),
     pytest.param("get", "/calendar/v3/calendars/x@y/events", id="calendar-no-tld"),
+    pytest.param("get", "/calendar/v3/calendars/x@y.com%3Ffoo/events", id="calendar-trailing-junk"),
 ]
 
 
@@ -157,23 +161,74 @@ def test_query_smuggled_in_an_event_id_cannot_notify_via_an_exempt_calendar(
     handler.confirm.assert_not_awaited()
 
 
-@pytest.mark.parametrize("method", ["put", "patch"])
-def test_update_forwards_only_the_fields_the_caller_set(
-    client, auth_headers, api_keys_file, token_file, backend, method
+def _sent(mock_client) -> dict:
+    """The last CalendarClient.request call as {parameter: value}, however it was passed."""
+    call = mock_client.request.await_args
+    bound = inspect.signature(CalendarClient.request).bind(None, *call.args, **call.kwargs)
+    bound.apply_defaults()
+    return {k: v for k, v in bound.arguments.items() if k != "self"}
+
+
+@pytest.mark.parametrize(
+    "method,suffix,body",
+    [
+        pytest.param("post", "/events", EVENT, id="create"),
+        pytest.param("put", "/events/event1", {"summary": "Renamed"}, id="update"),
+        pytest.param("patch", "/events/event1", {"summary": "Renamed"}, id="patch"),
+    ],
+)
+def test_writes_forward_only_the_fields_the_caller_set(
+    client, auth_headers, api_keys_file, token_file, backend, method, suffix, body
 ):
     _config(api_keys_file, token_file, ConfirmationMode.NONE)
     mock_client, _ = backend
 
     response = getattr(client, method)(
-        "/calendar/v3/calendars/primary/events/event1",
-        json={"summary": "Renamed"},
-        headers=auth_headers,
+        f"/calendar/v3/calendars/primary{suffix}", json=body, headers=auth_headers
     )
 
     assert response.status_code == 200
-    call = mock_client.request.await_args
-    assert call.args == (method.upper(), "/calendars/primary/events/event1")
-    assert call.kwargs["json_body"] == {"summary": "Renamed"}
+    sent = _sent(mock_client)
+    assert (sent["method"], sent["path"]) == (method.upper(), f"/calendars/primary{suffix}")
+    assert sent["json_body"] == body
+
+
+def test_delete_forwards_send_updates_and_passes_the_204_through(
+    client, auth_headers, api_keys_file, token_file, backend
+):
+    """Delete is the calendar write used every day. A misnamed keyword to the
+    client, or a 204 fed to response.json(), passed against the bare AsyncMock
+    and its fixture response, which returns {} for .json() even on a 204."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+    mock_client, _ = backend
+    mock_client.request.return_value = httpx.Response(204)
+
+    response = client.delete(
+        "/calendar/v3/calendars/primary/events/event1?sendUpdates=none", headers=auth_headers
+    )
+
+    assert response.status_code == 204
+    assert b"backend_error" not in response.content  # a success is not reported as an error
+    assert _sent(mock_client) == {
+        "method": "DELETE",
+        "path": "/calendars/primary/events/event1",
+        "params": {"sendUpdates": "none"},
+        "json_body": None,
+    }
+
+
+@pytest.mark.xfail(
+    strict=True, reason="api-proxy #21: calendar delete also answers 204 with a 'null' body"
+)
+def test_delete_answers_204_with_no_body(client, auth_headers, api_keys_file, token_file, backend):
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+    mock_client, _ = backend
+    mock_client.request.return_value = httpx.Response(204)
+
+    response = client.delete("/calendar/v3/calendars/primary/events/event1", headers=auth_headers)
+
+    assert response.status_code == 204
+    assert response.content == b""
 
 
 @pytest.mark.parametrize("method,suffix", WRITES)
@@ -260,7 +315,8 @@ def test_calendar_id_with_hash_reaches_google_intact(
     )
 
     [sent] = httpx_mock.get_requests()
+    # Any correct encoding passes (e.g. '@' as %40); only the id's intact content is pinned.
     assert (
-        sent.url.raw_path
-        == b"/calendar/v3/calendars/en.usa%23holiday@group.v.calendar.google.com/events"
+        unquote(sent.url.raw_path.decode())
+        == "/calendar/v3/calendars/en.usa#holiday@group.v.calendar.google.com/events"
     )
