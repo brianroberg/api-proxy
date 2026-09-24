@@ -1,4 +1,4 @@
-"""Tests for API key management CLI."""
+"""Tests for APIKeyManager (the CLI itself is tested in test_keys_cli.py)."""
 
 import json
 
