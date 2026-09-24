@@ -470,3 +470,53 @@ class TestCancelledWaitIsCleanedUp:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert web_queue.get_pending_sync() == []
+        assert web_queue._by_id == {}  # the id map must not leak the entry either
+
+
+class TestDashboardStreamAfterConnect:
+    """Frames after the first, the keepalive, and the endpoint itself: the
+    dashboard (EventSource) drops anything not framed 'data: ...\\n\\n', so an
+    unframed update or keepalive, or a stream served with another media type,
+    would leave it blank after the first render."""
+
+    async def test_updates_after_connect_are_framed_too(self, web_queue, config_web_confirm):
+        stream = web_queue.stream_events()
+        try:
+            await asyncio.wait_for(stream.__anext__(), 5)  # connected
+            task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+            frame = await asyncio.wait_for(stream.__anext__(), 5)
+        finally:
+            await stream.aclose()
+        assert frame.startswith("data: ") and frame.endswith("\n\n")
+        assert json.loads(frame[len("data: ") :])["event"] == "request_added"
+        task.cancel()
+
+    async def test_idle_stream_sends_an_sse_comment_keepalive(
+        self, web_queue, config_web_confirm, monkeypatch
+    ):
+        async def no_event_in_time(awaitable, timeout):
+            awaitable.close()
+            raise TimeoutError
+
+        stream = web_queue.stream_events()
+        try:
+            await asyncio.wait_for(stream.__anext__(), 5)  # connected
+            monkeypatch.setattr("api_proxy.web_confirmation.asyncio.wait_for", no_event_in_time)
+            frame = await stream.__anext__()
+        finally:
+            await stream.aclose()
+        assert frame == ": keepalive\n\n"
+
+    async def test_events_endpoint_serves_the_queue_stream_as_event_stream(
+        self, config_web_confirm
+    ):
+        from api_proxy.approval.handlers import event_stream
+
+        response = await event_stream()
+        try:
+            assert response.media_type == "text/event-stream"
+            first = await asyncio.wait_for(response.body_iterator.__anext__(), 5)
+        finally:
+            await response.body_iterator.aclose()
+        assert first.startswith("data: ")
+        assert json.loads(first[len("data: ") :])["event"] == "connected"

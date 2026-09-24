@@ -471,3 +471,4 @@ class TestResolutionFollowUpOnReject:
         _, headers, body = ntfy_send.await_args_list[1].args
         assert headers["Title"].startswith("Rejected:")
         assert "forwarded" not in body
+        assert "the caller was told the operator rejected it" in body
