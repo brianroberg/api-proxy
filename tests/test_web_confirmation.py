@@ -1,6 +1,7 @@
 """Tests for web-based confirmation queue."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -397,3 +398,56 @@ class TestGlobalQueue:
         reset_web_queue()
         queue2 = get_web_queue()
         assert queue1 is not queue2
+
+
+class TestDashboardStream:
+    """The dashboard renders only from the SSE stream (EventSource onmessage).
+    stream_events never ran in a test, and neither the approve nor the expiry
+    broadcast was asserted: dropping the 'data: ' framing (a blank dashboard,
+    so every request expires unseen), or either broadcast (stale cards), passed."""
+
+    async def test_first_frame_is_sse_framed_connected_state(self, web_queue, config_web_confirm):
+        stream = web_queue.stream_events()
+        try:
+            frame = await asyncio.wait_for(stream.__anext__(), 5)
+        finally:
+            await stream.aclose()
+        assert frame.startswith("data: ") and frame.endswith("\n\n")
+        assert json.loads(frame[len("data: ") :]) == {"event": "connected", "pending": []}
+
+    @pytest.mark.parametrize(
+        "decide,event",
+        [("approve", "request_approved"), ("reject", "request_rejected")],
+    )
+    async def test_operator_decision_is_broadcast_with_the_request_removed(
+        self, web_queue, config_web_confirm, decide, event
+    ):
+        events = web_queue.subscribe()
+        task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+        added = await asyncio.wait_for(events.get(), 5)
+        assert added["event"] == "request_added"
+        assert await getattr(web_queue, decide)(added["pending"][0]["id"]) is True
+        decided = await asyncio.wait_for(events.get(), 5)
+        assert decided == {"event": event, "pending": []}
+        await asyncio.wait_for(task, 5)
+
+    async def test_expiry_is_broadcast_with_the_request_removed(
+        self, web_queue, api_keys_file, token_file
+    ):
+        set_config(
+            Config(
+                api_keys_file=api_keys_file,
+                token_file=token_file,
+                confirmation_mode=ConfirmationMode.MODIFY,
+                confirmation_timeout=0.05,
+            )
+        )
+        events = web_queue.subscribe()
+        outcome = await asyncio.wait_for(
+            web_queue.add_request(method="DELETE", path="/x/events/1"), 5
+        )
+        assert outcome is ConfirmationOutcome.EXPIRED
+        kinds = []
+        while not events.empty():
+            kinds.append(events.get_nowait())
+        assert kinds[-1] == {"event": "request_timeout", "pending": []}
