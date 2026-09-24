@@ -243,3 +243,24 @@ class TestRsvpMatchesOnlyTheCallersOwnAddress:
     def test_an_empty_caller_address_matches_nothing(self):
         attendees = [{"displayName": "No email"}, {"email": ""}]
         assert build_rsvp_attendees(attendees, "", "accepted") is None
+
+
+@pytest.mark.xfail(strict=True, reason="api-proxy #22: '#' in a calendar id truncates the URL")
+def test_calendar_id_with_hash_reaches_google_intact(
+    client, auth_headers, api_keys_file, token_file, httpx_mock
+):
+    """The id regex admits '#' on purpose (holiday calendars), so the id must
+    reach Google as one percent-encoded path segment, not end at a fragment."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+    httpx_mock.add_response(json={"items": []})
+
+    client.get(
+        "/calendar/v3/calendars/en.usa%23holiday@group.v.calendar.google.com/events",
+        headers=auth_headers,
+    )
+
+    [sent] = httpx_mock.get_requests()
+    assert (
+        sent.url.raw_path
+        == b"/calendar/v3/calendars/en.usa%23holiday@group.v.calendar.google.com/events"
+    )
