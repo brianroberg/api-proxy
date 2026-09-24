@@ -200,7 +200,11 @@ def test_gmail_errors_are_reported_as_backend_errors_with_gmails_message(
         json={"error": {"code": status, "message": f"reason {status}"}},
     )
 
-    response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+    def refresh_fails(creds, request):  # a 401 triggers a token refresh; keep it offline
+        raise RuntimeError("refresh unavailable in tests")
+
+    with patch("google.oauth2.credentials.Credentials.refresh", refresh_fails):
+        response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
 
     assert response.status_code == status
     body = response.json()
@@ -208,11 +212,11 @@ def test_gmail_errors_are_reported_as_backend_errors_with_gmails_message(
 
 
 def test_a_non_json_gmail_error_is_reported_as_a_backend_error(client, auth_headers, httpx_mock):
-    httpx_mock.add_response(method="GET", url=f"{GMAIL}/labels", status_code=502, text="<html>")
+    httpx_mock.add_response(method="GET", url=f"{GMAIL}/labels", status_code=503, text="<html>")
 
     response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
 
-    assert response.status_code == 502
+    assert response.status_code == 503
     assert response.json() == {
         "error": "backend_error",
         "message": "Invalid JSON response from backend",
@@ -233,20 +237,91 @@ def test_draft_delete_answers_204_with_no_body(client, auth_headers, httpx_mock)
     assert response.content == b""
 
 
+DRAFT = {"message": {"raw": "cmF3"}}
+
+
 @pytest.mark.parametrize(
-    "method,path",
+    "method,path,body",
     [
-        ("GET", "/gmail/v1/users/me/labels"),
-        ("GET", "/gmail/v1/users/me/messages"),
-        ("POST", "/gmail/v1/users/me/messages/m1/untrash"),
+        ("GET", "/gmail/v1/users/me/messages", None),
+        ("GET", "/gmail/v1/users/me/messages/m1", None),
+        ("GET", "/gmail/v1/users/me/threads/t1", None),
+        ("GET", "/gmail/v1/users/me/labels", None),
+        ("GET", "/gmail/v1/users/me/labels/L1", None),
+        ("POST", "/gmail/v1/users/me/messages/m1/modify", {"addLabelIds": ["STARRED"]}),
+        ("POST", "/gmail/v1/users/me/messages/m1/trash", None),
+        ("POST", "/gmail/v1/users/me/messages/m1/untrash", None),
+        ("GET", "/gmail/v1/users/me/drafts", None),
+        ("GET", "/gmail/v1/users/me/drafts/d1", None),
+        ("POST", "/gmail/v1/users/me/drafts", DRAFT),
+        ("PUT", "/gmail/v1/users/me/drafts/d1", DRAFT),
+        ("DELETE", "/gmail/v1/users/me/drafts/d1", None),
     ],
 )
-def test_missing_backend_token_is_a_clean_502(client, auth_headers, token_file, method, path):
+def test_missing_backend_token_is_a_clean_502(client, auth_headers, token_file, method, path, body):
     """When the proxy's own Google token is missing, callers get a 502
     backend_error with no traceback and nothing token-related leaked."""
     token_file.unlink()
 
-    response = client.request(method, path, headers=auth_headers)
+    response = client.request(method, path, json=body, headers=auth_headers)
 
     assert response.status_code == 502
     assert response.json() == {"error": "backend_error", "message": "Backend authentication failed"}
+
+
+def test_trash_prompt_still_happens_when_the_metadata_fetch_fails(
+    client, auth_headers, config_confirm_modify, httpx_mock, recorded_confirm
+):
+    """A metadata fetch that fails (other than 404) must not block the request:
+    the operator is asked anyway, without sender and subject."""
+    calls, _ = recorded_confirm
+    httpx_mock.add_response(method="GET", url=METADATA_URL, status_code=500, json={})
+    httpx_mock.add_response(method="POST", url=f"{GMAIL}/messages/m1/trash", json={"id": "m1"})
+
+    response = client.post("/gmail/v1/users/me/messages/m1/trash", headers=auth_headers)
+
+    assert response.status_code == 200
+    [request] = calls
+    assert (request.message_sender, request.message_subject) == (None, None)
+
+
+def test_label_names_fall_back_to_ids_and_both_lists_reach_the_prompt(
+    client, auth_headers, config_confirm_all, httpx_mock, recorded_confirm
+):
+    """If the labels lookup fails, the prompt shows the raw ids (never an
+    error or None), for both the added and the removed labels."""
+    calls, _ = recorded_confirm
+    httpx_mock.add_response(method="GET", url=f"{GMAIL}/labels", status_code=500, json={})
+    _metadata(httpx_mock)
+    httpx_mock.add_response(method="POST", url=f"{GMAIL}/messages/m1/modify", json={"id": "m1"})
+
+    response = client.post(
+        "/gmail/v1/users/me/messages/m1/modify",
+        json={"addLabelIds": ["Label_1"], "removeLabelIds": ["Label_2", "UNREAD"]},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    [request] = calls
+    assert request.labels_to_add == ["Label_1"]
+    assert request.labels_to_remove == ["Label_2", "UNREAD"]
+
+
+def test_an_unknown_label_id_is_shown_as_its_id(
+    client, auth_headers, config_confirm_all, httpx_mock, recorded_confirm
+):
+    calls, _ = recorded_confirm
+    httpx_mock.add_response(
+        method="GET", url=f"{GMAIL}/labels", json={"labels": [{"id": "Label_1", "name": "Custom"}]}
+    )
+    _metadata(httpx_mock)
+    httpx_mock.add_response(method="POST", url=f"{GMAIL}/messages/m1/modify", json={"id": "m1"})
+
+    client.post(
+        "/gmail/v1/users/me/messages/m1/modify",
+        json={"removeLabelIds": ["Label_1", "Label_9"]},
+        headers=auth_headers,
+    )
+
+    [request] = calls
+    assert request.labels_to_remove == ["Custom", "Label_9"]

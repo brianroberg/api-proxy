@@ -347,3 +347,24 @@ class TestRefreshOnUnauthorizedEndToEnd:
 
         assert response.status_code == 401
         assert len(httpx_mock.get_requests()) == 1
+
+
+async def test_an_expired_token_whose_refresh_fails_is_an_auth_failure(test_config):
+    """Once credentials carry an expiry, an expired token is refreshed before
+    use. If that refresh fails, the request must fail as a backend auth error,
+    not go out with the stale token."""
+    import datetime
+
+    client = GmailClient()
+    try:
+        creds = client._get_credentials()
+        creds.expiry = datetime.datetime(2000, 1, 1)
+
+        def fail(creds, request):
+            raise RuntimeError("refresh refused")
+
+        with patch("google.oauth2.credentials.Credentials.refresh", fail):
+            with pytest.raises(RuntimeError, match="Backend authentication failed"):
+                await client.request("GET", "/gmail/v1/users/me/labels")
+    finally:
+        await client.close()
