@@ -231,3 +231,22 @@ def test_draft_delete_answers_204_with_no_body(client, auth_headers, httpx_mock)
 
     assert response.status_code == 204
     assert response.content == b""
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/gmail/v1/users/me/labels"),
+        ("GET", "/gmail/v1/users/me/messages"),
+        ("POST", "/gmail/v1/users/me/messages/m1/untrash"),
+    ],
+)
+def test_missing_backend_token_is_a_clean_502(client, auth_headers, token_file, method, path):
+    """When the proxy's own Google token is missing, callers get a 502
+    backend_error with no traceback and nothing token-related leaked."""
+    token_file.unlink()
+
+    response = client.request(method, path, headers=auth_headers)
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "backend_error", "message": "Backend authentication failed"}
