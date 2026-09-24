@@ -79,6 +79,7 @@ def test_show_masks_all_but_the_last_four_characters(run, keys_file):
     assert code == 0
     assert key not in out
     assert key[-4:] in out
+    assert key[-5:] not in out  # only the last four characters are shown
     assert "Last Used:  never" in out
 
 
@@ -90,3 +91,20 @@ def test_list_empty_and_populated(run):
     assert code == 0
     assert "agent" in out
     assert "never" in out
+
+
+def test_list_shows_a_disabled_key_as_disabled(run):
+    run("create", "--name", "agent")
+    run("disable", "--name", "agent")
+    code, out, _ = run("list")
+    assert code == 0
+    [row] = [line for line in out.splitlines() if line.startswith("agent")]
+    assert row.split()[-1] == "no"
+
+
+def test_create_with_a_duplicate_name_fails_and_adds_nothing(run, keys_file):
+    run("create", "--name", "agent")
+    code, _, err = run("create", "--name", "agent")
+    assert code == 1
+    assert "already exists" in err
+    assert list(_stored(keys_file)) == ["agent"]

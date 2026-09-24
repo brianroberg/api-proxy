@@ -211,3 +211,43 @@ class TestErrorsNeverLeakKeys:
         assert disabled_api_key not in logged
         # The documented behaviour is a short prefix, enough to tell keys apart.
         assert self.UNKNOWN_KEY[:10] in logged
+
+
+class TestKeysFileChangedByAnotherProcess:
+    """The api-proxy-keys CLI runs as a separate process and rewrites the file
+    directly. A cache that is merely invalidated by this process's own writes
+    would pass the in-process tests above and still ignore the CLI."""
+
+    def _write(self, api_keys_file, mutate):
+        data = json.loads(api_keys_file.read_text())
+        mutate(data["keys"])
+        api_keys_file.write_text(json.dumps(data))
+
+    def test_disable_written_by_another_process_takes_effect(
+        self, client, auth_headers, api_keys_file, httpx_mock, valid_api_key
+    ):
+        httpx_mock.add_response(url=LABELS_URL, json={"labels": []})
+        assert client.get("/gmail/v1/users/me/labels", headers=auth_headers).status_code == 200
+        self._write(api_keys_file, lambda keys: keys[valid_api_key].update(enabled=False))
+
+        response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+        assert response.status_code == 403
+
+    def test_revoke_written_by_another_process_takes_effect(
+        self, client, auth_headers, api_keys_file, httpx_mock, valid_api_key
+    ):
+        httpx_mock.add_response(url=LABELS_URL, json={"labels": []})
+        assert client.get("/gmail/v1/users/me/labels", headers=auth_headers).status_code == 200
+        self._write(api_keys_file, lambda keys: keys.pop(valid_api_key))
+
+        response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+        assert response.status_code == 401
+
+
+def test_rejected_key_log_carries_only_a_short_prefix(client, caplog):
+    key = "aproxy_" + "q" * 32
+    caplog.set_level(logging.DEBUG, logger="api_proxy")
+    client.get("/gmail/v1/users/me/labels", headers={"Authorization": f"Bearer {key}"})
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert key[:10] in logged
+    assert key[:11] not in logged  # no more than the documented 10 characters

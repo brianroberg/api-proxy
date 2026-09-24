@@ -1,6 +1,7 @@
 """Tests for APIKeyManager (the CLI itself is tested in test_keys_cli.py)."""
 
 import json
+import threading
 
 import pytest
 
@@ -290,11 +291,22 @@ class TestRevocationIsDurable:
             if not state["fired"]:
                 state["fired"] = True
                 monkeypatch.setattr(APIKeyManager, "_load_keys", original_load)
-                operator_change(APIKeyManager(keys_file))
+                # The operator acts from another thread. Without a lock it
+                # finishes inside this load-to-save window (the lost update);
+                # a fix that locks the file makes it wait, and the timeout
+                # lets the request finish instead of deadlocking the test.
+                operator = threading.Thread(
+                    target=operator_change, args=(APIKeyManager(keys_file),)
+                )
+                operator.start()
+                operator.join(timeout=1.0)
+                state["operator"] = operator
             return data
 
         monkeypatch.setattr(APIKeyManager, "_load_keys", load_then_operator_acts)
         manager.update_last_used(key)  # the in-flight request's bookkeeping
+        state["operator"].join(timeout=10)
+        assert not state["operator"].is_alive()
         return key
 
     @pytest.mark.xfail(

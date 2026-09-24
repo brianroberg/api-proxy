@@ -58,11 +58,12 @@ def run_main(monkeypatch, tmp_path):
     "flags,expected_mode",
     [
         ((), ConfirmationMode.MODIFY),
+        (("--confirm-modify",), ConfirmationMode.MODIFY),
         (("--web-confirm",), ConfirmationMode.MODIFY),
         (("--confirm-all",), ConfirmationMode.ALL),
         (("--no-confirm",), ConfirmationMode.NONE),
     ],
-    ids=["default", "web-confirm-default", "confirm-all", "no-confirm"],
+    ids=["default", "confirm-modify", "web-confirm-default", "confirm-all", "no-confirm"],
 )
 def test_confirmation_mode_reaches_config(run_main, flags, expected_mode):
     run_main(*flags)
@@ -71,7 +72,7 @@ def test_confirmation_mode_reaches_config(run_main, flags, expected_mode):
 
 @pytest.mark.parametrize(
     "value,expected",
-    [("300", 300.0), ("12", 12.0), ("0", None)],
+    [("300", 300.0), ("12", 12.0), ("0", None), ("-5", None)],
 )
 def test_confirmation_timeout_reaches_config(run_main, value, expected):
     """A positive timeout is kept; 0 means 'wait forever' (None). Losing the
