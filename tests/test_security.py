@@ -1,5 +1,12 @@
 """Security tests - verify blocked operations are actually blocked."""
 
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from api_proxy.confirmation import ConfirmationHandler
+from api_proxy.main import is_blocked_path
+
 
 class TestBlockedOperations:
     """Test that blocked operations return 403 Forbidden."""
@@ -330,3 +337,75 @@ class TestAllowlistApproach:
             headers=auth_headers,
         )
         assert response.status_code == 403
+
+
+class TestBlocklistNeverPrompts:
+    """Invariant 1: blocked operations are rejected immediately and never reach
+    the approval prompt, whatever the method. The POST-only tests above pass
+    even with BLOCKED_PATHS emptied, because the allowlist also rejects POST to
+    these paths; but DELETE/PUT/GET on .../drafts/send route into the draft
+    handlers (as draft_id="send") and would queue an approval push. These
+    requests exercise the blocklist on its own, under --confirm-all, with the
+    confirmation handler watched."""
+
+    BLOCKED_REQUESTS = [
+        ("DELETE", "/gmail/v1/users/me/drafts/send"),
+        ("PUT", "/gmail/v1/users/me/drafts/send"),
+        ("GET", "/gmail/v1/users/me/drafts/send"),
+        ("GET", "/gmail/v1/users/me/messages/send"),
+        ("GET", "/gmail/v1/users/me/messages/import"),
+        ("GET", "/gmail/v1/users/me/messages/insert"),
+        ("DELETE", "/gmail/v1/users/me/drafts/send/"),
+        ("DELETE", "/GMAIL/V1/USERS/ME/DRAFTS/SEND"),
+        ("GET", "/gmail/v1/users/someone@example.com/messages/import"),
+    ]
+
+    @pytest.mark.parametrize("method,path", BLOCKED_REQUESTS)
+    def test_blocked_path_is_403_without_prompting_or_calling_upstream(
+        self, client, auth_headers, config_confirm_all, httpx_mock, method, path
+    ):
+        with patch.object(ConfirmationHandler, "confirm", new_callable=AsyncMock) as confirm:
+            response = client.request(method, path, json={}, headers=auth_headers)
+        assert response.status_code == 403
+        assert response.json()["error"] == "forbidden"
+        assert confirm.await_count == 0
+        assert httpx_mock.get_requests() == []
+
+    @pytest.mark.parametrize(
+        "path,blocked",
+        [
+            ("/gmail/v1/users/me/messages/send", True),
+            ("/gmail/v1/users/me/messages/send/", True),
+            ("/Gmail/V1/Users/Me/Drafts/Send", True),
+            ("/gmail/v1/users/anyone/messages/insert", True),
+            ("/gmail/v1/users/me/drafts/send/extra", False),
+            ("/gmail/v1/users/me/drafts", False),
+        ],
+    )
+    def test_is_blocked_path(self, path, blocked):
+        assert is_blocked_path(path) is blocked
+
+
+class TestUnlistedMethodsAreRejected:
+    """The allowlist matches (method, path) pairs. HEAD would run the GET handler
+    and OPTIONS/TRACE/unknown methods have no reviewed route, so none may pass
+    the middleware for any allowlisted or blocked path."""
+
+    @pytest.mark.parametrize("method", ["HEAD", "OPTIONS", "TRACE", "SEND"])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/gmail/v1/users/me/messages",
+            "/gmail/v1/users/me/drafts/d1",
+            "/gmail/v1/users/me/messages/send",
+            "/calendar/v3/calendars/primary/events",
+        ],
+    )
+    def test_unlisted_method_is_403_and_never_reaches_upstream(
+        self, client, auth_headers, httpx_mock, method, path
+    ):
+        response = client.request(method, path, headers=auth_headers)
+        assert response.status_code == 403
+        if method != "HEAD":  # a HEAD response carries no body
+            assert response.json()["error"] == "forbidden"
+        assert httpx_mock.get_requests() == []
