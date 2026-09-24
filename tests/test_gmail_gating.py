@@ -184,3 +184,50 @@ def test_draft_update_and_delete_use_their_own_method_upstream(
     assert response.status_code == status
     [sent] = httpx_mock.get_requests()
     assert sent.method == method
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 429, 500])
+def test_gmail_errors_are_reported_as_backend_errors_with_gmails_message(
+    client, auth_headers, httpx_mock, status
+):
+    """Callers tell 'Gmail said no' apart from success by error == backend_error.
+    A 400 (a bad label id, say) forwarded as a plain success, or Gmail's reason
+    replaced by a constant, passed the existing 403/404/500 cases."""
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{GMAIL}/labels",
+        status_code=status,
+        json={"error": {"code": status, "message": f"reason {status}"}},
+    )
+
+    response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+
+    assert response.status_code == status
+    body = response.json()
+    assert (body["error"], body["message"]) == ("backend_error", f"reason {status}")
+
+
+def test_a_non_json_gmail_error_is_reported_as_a_backend_error(client, auth_headers, httpx_mock):
+    httpx_mock.add_response(method="GET", url=f"{GMAIL}/labels", status_code=502, text="<html>")
+
+    response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": "backend_error",
+        "message": "Invalid JSON response from backend",
+    }
+
+
+@pytest.mark.xfail(strict=True, reason="api-proxy #21: draft delete answers 204 with a body")
+def test_draft_delete_answers_204_with_no_body(client, auth_headers, httpx_mock):
+    """RFC 9110: a 204 carries no content. The handler returns
+    JSONResponse(status_code=204, content=None), which renders the body
+    'null'; under uvicorn that raises a Content-Length protocol error after
+    the response starts, logging a traceback on every successful delete."""
+    httpx_mock.add_response(method="DELETE", url=f"{GMAIL}/drafts/d1", status_code=204)
+
+    response = client.delete("/gmail/v1/users/me/drafts/d1", headers=auth_headers)
+
+    assert response.status_code == 204
+    assert response.content == b""
