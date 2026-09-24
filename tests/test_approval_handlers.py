@@ -30,11 +30,15 @@ def config_web_confirm(temp_dir, api_keys_file, token_file):
 def web_client(config_web_confirm):
     """Create test client with approval router enabled."""
     reset_web_queue()
-    # Include approval router for testing
-    if router not in app.routes:
-        app.include_router(router)
+    # Mount the approval router for this test only. The old guard
+    # (`router not in app.routes`) compared an APIRouter with Route objects,
+    # was always true, and left one more set of /approval routes on the shared
+    # app after every test, so later tests saw them depending on order.
+    routes_before = list(app.router.routes)
+    app.include_router(router)
     client = TestClient(app)
     yield client
+    app.router.routes[:] = routes_before
 
 
 class TestApprovalQueueEndpoint:
