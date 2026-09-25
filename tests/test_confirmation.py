@@ -1,6 +1,7 @@
 """Tests for human-in-the-loop confirmation feature."""
 
 import asyncio
+import re
 from unittest.mock import patch
 
 import pytest
@@ -231,10 +232,25 @@ class TestIntegrationWithHandlers:
     def test_modify_operation_rejected_returns_403(
         self, client, auth_headers, httpx_mock, config_confirm_modify
     ):
-        """Rejected modify operations should return 403."""
-        # Note: In actual test, we'd need to mock stdin
-        # For now, test that with --no-confirm, it works
-        pass  # This requires more complex stdin mocking
+        """A modify operation the operator rejects returns 403 and never
+        reaches Gmail. (This test used to be an empty body that always passed.)"""
+
+        # The handler reads the message's From/Subject to show the operator.
+        httpx_mock.add_response(
+            method="GET",
+            url=re.compile(r"https://gmail\.googleapis\.com/gmail/v1/users/me/messages/m1\?.*"),
+            json={"id": "m1", "payload": {"headers": []}},
+        )
+
+        async def reject(self, request):
+            return ConfirmationOutcome.REJECTED
+
+        with patch.object(ConfirmationHandler, "confirm", reject):
+            response = client.post("/gmail/v1/users/me/messages/m1/trash", headers=auth_headers)
+
+        assert response.status_code == 403
+        assert response.json() == {"error": "forbidden", "message": "Request rejected by operator"}
+        assert [r.method for r in httpx_mock.get_requests()] == ["GET"]  # the trash POST never ran
 
     def test_blocked_operation_never_prompts(self, client, auth_headers, config_confirm_all):
         """Blocked operations should never trigger confirmation prompt."""

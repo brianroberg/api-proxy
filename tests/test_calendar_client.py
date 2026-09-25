@@ -1,6 +1,7 @@
 """Tests for Google Calendar API client."""
 
 import json
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -270,3 +271,66 @@ class TestScopes:
     def test_uses_full_calendar_scope(self):
         """Should use full calendar scope (required for blocking events with attendees)."""
         assert SCOPES == ["https://www.googleapis.com/auth/calendar"]
+
+
+class TestRefreshOnUnauthorizedEndToEnd:
+    """401 -> refresh -> persist -> retry on a real CalendarClient and token
+    file. The existing retry test mocks the refresh out and checks only call
+    counts, so a retry with a stale token, a retry that dropped the query or
+    body (sendUpdates!), or a refreshed token never saved all passed."""
+
+    async def test_retry_repeats_the_request_with_the_new_token_and_saves_it(
+        self, test_config, token_file, httpx_mock
+    ):
+        from api_proxy.calendar.client import CalendarClient
+
+        url = re.compile(r"https://www\.googleapis\.com/calendar/v3/calendars/primary/events.*")
+        httpx_mock.add_response(method="POST", url=url, status_code=401, json={})
+        httpx_mock.add_response(method="POST", url=url, json={"id": "e1"})
+
+        def refresh(creds, request):
+            creds.token = "fresh-token"
+
+        client = CalendarClient()
+        try:
+            with patch("google.oauth2.credentials.Credentials.refresh", refresh):
+                response = await client.request(
+                    "POST",
+                    "/calendars/primary/events",
+                    params={"sendUpdates": "none"},
+                    json_body={"summary": "Planning"},
+                )
+        finally:
+            await client.close()
+
+        assert response.status_code == 200
+        first, retry = httpx_mock.get_requests()
+        assert first.headers["Authorization"] == "Bearer mock_access_token"
+        assert retry.headers["Authorization"] == "Bearer fresh-token"
+        assert (retry.method, str(retry.url), retry.content) == (
+            first.method,
+            str(first.url),
+            first.content,
+        )
+        assert "sendUpdates=none" in str(retry.url)
+        assert json.loads(token_file.read_text())["token"] == "fresh-token"
+
+
+async def test_an_expired_token_whose_refresh_fails_is_an_auth_failure(test_config):
+    """An expired token is refreshed before use. If that refresh fails, the
+    request must fail as a backend auth error, not go out with the stale token."""
+    import datetime
+
+    client = CalendarClient()
+    try:
+        creds = client._get_credentials()
+        creds.expiry = datetime.datetime(2000, 1, 1)
+
+        def fail(creds, request):
+            raise RuntimeError("refresh refused")
+
+        with patch("google.oauth2.credentials.Credentials.refresh", fail):
+            with pytest.raises(RuntimeError, match="Backend authentication failed"):
+                await client.request("GET", "/calendars/primary/events")
+    finally:
+        await client.close()

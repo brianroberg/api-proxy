@@ -26,6 +26,36 @@ def _no_real_ntfy_sends(monkeypatch):
     monkeypatch.setattr("api_proxy.notifications._send", AsyncMock())
 
 
+@pytest.fixture(autouse=True)
+def _fresh_approval_state():
+    """Reset the module-level confirmation handler, web queue and notification
+    state around every test. Nothing did: one set_web_queue() call (what main()
+    does under --web-confirm) made 8 later calendar tests fail."""
+    from api_proxy import confirmation, notifications, web_confirmation
+
+    def _reset():
+        confirmation.reset_confirmation_handler()
+        web_confirmation.reset_web_queue()
+        notifications.reset_notification_state()
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_backend_clients(monkeypatch):
+    """Start every test without a cached Gmail/Calendar client.
+
+    Both modules keep a process-wide client whose credentials load once, so
+    without this each test silently reused credentials loaded from an earlier
+    test's token file: backend-auth failures could not be tested, and anything
+    that did test them would pass or fail depending on test order.
+    """
+    monkeypatch.setattr("api_proxy.gmail.client._client", None)
+    monkeypatch.setattr("api_proxy.calendar.client._client", None)
+
+
 @pytest.fixture
 def temp_dir():
     """Create a temporary directory for test files."""

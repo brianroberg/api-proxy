@@ -1,6 +1,7 @@
-"""Tests for API key management CLI."""
+"""Tests for APIKeyManager (the CLI itself is tested in test_keys_cli.py)."""
 
 import json
+import threading
 
 import pytest
 
@@ -271,3 +272,55 @@ class TestFileHandling:
 
         assert key1 in data["keys"]
         assert key2 in data["keys"]
+
+
+class TestRevocationIsDurable:
+    """Every authenticated request rewrites the keys file (update_last_used:
+    load, set last_used_at, save). A revoke or disable that lands between one
+    request's load and save is written back over by that request, so the key
+    comes back. This forces that interleaving deterministically."""
+
+    def _interleave(self, keys_file, monkeypatch, operator_change):
+        manager = APIKeyManager(keys_file)
+        key = manager.create_key("agent")
+        original_load = APIKeyManager._load_keys
+        state = {"fired": False}
+
+        def load_then_operator_acts(self):
+            data = original_load(self)
+            if not state["fired"]:
+                state["fired"] = True
+                monkeypatch.setattr(APIKeyManager, "_load_keys", original_load)
+                # The operator acts from another thread. Without a lock it
+                # finishes inside this load-to-save window (the lost update);
+                # a fix that locks the file makes it wait, and the timeout
+                # lets the request finish instead of deadlocking the test.
+                operator = threading.Thread(
+                    target=operator_change, args=(APIKeyManager(keys_file),)
+                )
+                operator.start()
+                operator.join(timeout=1.0)
+                state["operator"] = operator
+            return data
+
+        monkeypatch.setattr(APIKeyManager, "_load_keys", load_then_operator_acts)
+        manager.update_last_used(key)  # the in-flight request's bookkeeping
+        state["operator"].join(timeout=10)
+        assert not state["operator"].is_alive()
+        return key
+
+    @pytest.mark.xfail(
+        strict=True, reason="api-proxy #19: a request's update_last_used can undo a revoke"
+    )
+    def test_revoke_during_a_request_stays_revoked(self, temp_dir, monkeypatch):
+        keys_file = temp_dir / "keys.json"
+        key = self._interleave(keys_file, monkeypatch, lambda m: m.revoke_key("agent"))
+        assert APIKeyManager(keys_file).validate_key(key) is None
+
+    @pytest.mark.xfail(
+        strict=True, reason="api-proxy #19: a request's update_last_used can undo a disable"
+    )
+    def test_disable_during_a_request_stays_disabled(self, temp_dir, monkeypatch):
+        keys_file = temp_dir / "keys.json"
+        key = self._interleave(keys_file, monkeypatch, lambda m: m.set_enabled("agent", False))
+        assert APIKeyManager(keys_file).validate_key(key)["enabled"] is False

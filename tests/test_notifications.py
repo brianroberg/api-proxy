@@ -400,3 +400,75 @@ class TestDescribeRequest:
     )
     def test_descriptions(self, config_web_confirm, overrides, expected):
         assert notifications.describe_request(_pending(**overrides)) == expected
+
+
+SENDER = "sentinel-sender@example.com"
+ATTENDEE = "sentinel-attendee@example.com"
+
+
+class TestNoPersonalDataInAnyTitleBranch:
+    """describe_request builds the push Title per kind of request. The privacy
+    tests above use a calendar event, which returns from the '/events' branch
+    before the Gmail and RSVP branches run, so adding the sender to a trash
+    title, or attendees to an RSVP title, passed. Every branch is exercised
+    here with a sender and attendees present."""
+
+    @pytest.mark.parametrize(
+        "method,path,extra",
+        [
+            ("DELETE", "/calendar/v3/calendars/primary/events/e1", {"event_summary": "Sync"}),
+            (
+                "POST",
+                "/calendar/v3/calendars/primary/events/e1/respond",
+                {"event_summary": "Sync", "rsvp_response": "accepted"},
+            ),
+            ("POST", "/gmail/v1/users/me/messages/m1/trash", {"message_subject": "Hello"}),
+            ("POST", "/gmail/v1/users/me/messages/m1/untrash", {"message_subject": "Hello"}),
+            ("POST", "/gmail/v1/users/me/messages/m1/modify", {"message_subject": "Hello"}),
+            ("POST", "/gmail/v1/users/me/drafts", {}),
+            ("GET", "/gmail/v1/users/me/labels", {}),
+        ],
+    )
+    @pytest.mark.parametrize("outcome", [None, "approved", "rejected", "expired"])
+    def test_no_sender_or_attendee_anywhere(self, config_web_confirm, method, path, extra, outcome):
+        fields = {"event_summary": None, **extra}
+        pending = _pending(
+            method=method,
+            path=path,
+            message_sender=SENDER,
+            event_attendees=[ATTENDEE],
+            **fields,
+        )
+        if outcome is None:
+            headers, body = notifications.build_pending_notification(pending)
+        else:
+            headers, body = notifications.build_resolution_notification(pending, outcome)
+        blob = body + " ".join(headers.values())
+        assert SENDER not in blob
+        assert ATTENDEE not in blob
+
+
+class TestResolutionFollowUpOnReject:
+    async def test_reject_pushes_a_rejected_follow_up(
+        self, web_queue, config_web_confirm, ntfy_send
+    ):
+        """The approve and expiry follow-ups were pinned; a reject that pushed
+        'Approved: ... forwarded to the backend' to the phone passed."""
+        task = asyncio.create_task(
+            web_queue.add_request(
+                method="DELETE",
+                path="/calendars/primary/events/event1",
+                event_summary="Team Sync",
+            )
+        )
+        await asyncio.sleep(0.05)
+        pending = await web_queue.get_pending()
+        await web_queue.reject(pending[0]["id"])
+        assert await task is ConfirmationOutcome.REJECTED
+        await asyncio.sleep(0.05)
+
+        assert ntfy_send.await_count == 2
+        _, headers, body = ntfy_send.await_args_list[1].args
+        assert headers["Title"].startswith("Rejected:")
+        assert "forwarded" not in body
+        assert "the caller was told the operator rejected it" in body

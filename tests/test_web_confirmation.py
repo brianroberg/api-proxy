@@ -1,6 +1,7 @@
 """Tests for web-based confirmation queue."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -397,3 +398,125 @@ class TestGlobalQueue:
         reset_web_queue()
         queue2 = get_web_queue()
         assert queue1 is not queue2
+
+
+class TestDashboardStream:
+    """The dashboard renders only from the SSE stream (EventSource onmessage).
+    stream_events never ran in a test, and neither the approve nor the expiry
+    broadcast was asserted: dropping the 'data: ' framing (a blank dashboard,
+    so every request expires unseen), or either broadcast (stale cards), passed."""
+
+    async def test_first_frame_is_sse_framed_connected_state(self, web_queue, config_web_confirm):
+        stream = web_queue.stream_events()
+        try:
+            frame = await asyncio.wait_for(stream.__anext__(), 5)
+        finally:
+            await stream.aclose()
+        assert frame.startswith("data: ") and frame.endswith("\n\n")
+        assert json.loads(frame[len("data: ") :]) == {"event": "connected", "pending": []}
+
+    @pytest.mark.parametrize(
+        "decide,event",
+        [("approve", "request_approved"), ("reject", "request_rejected")],
+    )
+    async def test_operator_decision_is_broadcast_with_the_request_removed(
+        self, web_queue, config_web_confirm, decide, event
+    ):
+        events = web_queue.subscribe()
+        task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+        added = await asyncio.wait_for(events.get(), 5)
+        assert added["event"] == "request_added"
+        assert await getattr(web_queue, decide)(added["pending"][0]["id"]) is True
+        decided = await asyncio.wait_for(events.get(), 5)
+        assert decided == {"event": event, "pending": []}
+        await asyncio.wait_for(task, 5)
+
+    async def test_expiry_is_broadcast_with_the_request_removed(
+        self, web_queue, api_keys_file, token_file
+    ):
+        set_config(
+            Config(
+                api_keys_file=api_keys_file,
+                token_file=token_file,
+                confirmation_mode=ConfirmationMode.MODIFY,
+                confirmation_timeout=0.05,
+            )
+        )
+        events = web_queue.subscribe()
+        outcome = await asyncio.wait_for(
+            web_queue.add_request(method="DELETE", path="/x/events/1"), 5
+        )
+        assert outcome is ConfirmationOutcome.EXPIRED
+        kinds = []
+        while not events.empty():
+            kinds.append(events.get_nowait())
+        assert kinds[-1] == {"event": "request_timeout", "pending": []}
+
+
+class TestCancelledWaitIsCleanedUp:
+    @pytest.mark.xfail(
+        strict=True, reason="api-proxy #20: a cancelled wait leaves an orphaned queue entry"
+    )
+    async def test_cancelled_wait_leaves_nothing_pending(self, web_queue, config_web_confirm):
+        """If the coroutine waiting for a decision is cancelled (server shutdown,
+        or a caller-side timeout around confirm()), its entry must leave the
+        queue, as the timeout path does. Otherwise the dashboard keeps a card,
+        and an approval push, for a request nobody is waiting on; approving
+        it then fails, and the entry never expires."""
+        task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+        await asyncio.sleep(0.05)
+        assert len(web_queue.get_pending_sync()) == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert web_queue.get_pending_sync() == []
+        assert web_queue._by_id == {}  # the id map must not leak the entry either
+
+
+class TestDashboardStreamAfterConnect:
+    """Frames after the first, the keepalive, and the endpoint itself: the
+    dashboard (EventSource) drops anything not framed 'data: ...\\n\\n', so an
+    unframed update or keepalive, or a stream served with another media type,
+    would leave it blank after the first render."""
+
+    async def test_updates_after_connect_are_framed_too(self, web_queue, config_web_confirm):
+        stream = web_queue.stream_events()
+        try:
+            await asyncio.wait_for(stream.__anext__(), 5)  # connected
+            task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+            frame = await asyncio.wait_for(stream.__anext__(), 5)
+        finally:
+            await stream.aclose()
+        assert frame.startswith("data: ") and frame.endswith("\n\n")
+        assert json.loads(frame[len("data: ") :])["event"] == "request_added"
+        task.cancel()
+
+    async def test_idle_stream_sends_an_sse_comment_keepalive(
+        self, web_queue, config_web_confirm, monkeypatch
+    ):
+        async def no_event_in_time(awaitable, timeout):
+            awaitable.close()
+            raise TimeoutError
+
+        stream = web_queue.stream_events()
+        try:
+            await asyncio.wait_for(stream.__anext__(), 5)  # connected
+            monkeypatch.setattr("api_proxy.web_confirmation.asyncio.wait_for", no_event_in_time)
+            frame = await stream.__anext__()
+        finally:
+            await stream.aclose()
+        assert frame == ": keepalive\n\n"
+
+    async def test_events_endpoint_serves_the_queue_stream_as_event_stream(
+        self, config_web_confirm
+    ):
+        from api_proxy.approval.handlers import event_stream
+
+        response = await event_stream()
+        try:
+            assert response.media_type == "text/event-stream"
+            first = await asyncio.wait_for(response.body_iterator.__anext__(), 5)
+        finally:
+            await response.body_iterator.aclose()
+        assert first.startswith("data: ")
+        assert json.loads(first[len("data: ") :])["event"] == "connected"
