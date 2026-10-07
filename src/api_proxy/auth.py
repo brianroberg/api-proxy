@@ -47,6 +47,11 @@ class KeysFileLockError(KeysFileError):
     or a filesystem without flock support)."""
 
 
+class KeysFileUnreadable(KeysFileError):
+    """The keys file exists but cannot be read or parsed, so a writer will
+    not replace it."""
+
+
 class APIKeyManager:
     """Manages API key storage and validation."""
 
@@ -107,8 +112,18 @@ class APIKeyManager:
         finally:
             os.close(fd)  # releases the lock
 
-    def _load_keys(self) -> dict:
-        """Load keys from file. Creates empty structure if file doesn't exist."""
+    def _load_keys(self, strict: bool = False) -> dict:
+        """
+        Load keys from file. Creates empty structure if file doesn't exist.
+
+        Readers use the default, unchanged: a file that cannot be opened or
+        is not valid JSON reads as no keys. Writers pass ``strict=True``:
+        they save what they load, and saving an empty structure would
+        replace every key in the file, so an existing file that cannot be
+        read or parsed raises KeysFileUnreadable instead.
+        """
+        if strict:
+            return self._load_keys_strictly()
         if not self.keys_file.exists():
             return {"keys": {}}
 
@@ -121,6 +136,23 @@ class APIKeyManager:
         except (json.JSONDecodeError, OSError) as e:
             logger.error(f"Failed to load API keys file: {e}")
             return {"keys": {}}
+
+    def _load_keys_strictly(self) -> dict:
+        try:
+            with open(self.keys_file) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return {"keys": {}}
+        except (OSError, ValueError) as e:  # ValueError: bad JSON or bad UTF-8
+            raise KeysFileUnreadable(
+                f"Cannot read the API keys file {self.keys_file}, so it was not changed: {e}"
+            ) from e
+        if not isinstance(data, dict) or not isinstance(data.setdefault("keys", {}), dict):
+            raise KeysFileUnreadable(
+                f"The API keys file {self.keys_file} does not hold a keys object, "
+                "so it was not changed"
+            )
+        return data
 
     def _save_keys(self, data: dict) -> None:
         """Save keys to file atomically."""
@@ -147,7 +179,7 @@ class APIKeyManager:
     def create_key(self, name: str) -> str:
         """Create a new API key with the given name."""
         with self._locked():
-            data = self._load_keys()
+            data = self._load_keys(strict=True)
 
             # Check for duplicate names
             for key_data in data["keys"].values():
@@ -205,7 +237,7 @@ class APIKeyManager:
         """
         try:
             with self._locked(LAST_USED_LOCK_TIMEOUT_SECONDS):
-                data = self._load_keys()
+                data = self._load_keys(strict=True)
                 if key in data["keys"]:
                     data["keys"][key]["last_used_at"] = datetime.now(UTC).isoformat()
                     self._save_keys(data)
@@ -215,7 +247,7 @@ class APIKeyManager:
     def set_enabled(self, name: str, enabled: bool) -> bool:
         """Enable or disable a key by name. Returns True if successful."""
         with self._locked():
-            data = self._load_keys()
+            data = self._load_keys(strict=True)
             for key, key_data in data["keys"].items():
                 if key_data.get("name") == name:
                     data["keys"][key]["enabled"] = enabled
@@ -226,7 +258,7 @@ class APIKeyManager:
     def revoke_key(self, name: str) -> bool:
         """Permanently delete a key by name. Returns True if successful."""
         with self._locked():
-            data = self._load_keys()
+            data = self._load_keys(strict=True)
             key_to_delete = None
             for key, key_data in data["keys"].items():
                 if key_data.get("name") == name:

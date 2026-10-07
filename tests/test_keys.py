@@ -8,7 +8,7 @@ import time
 import pytest
 
 from api_proxy import auth
-from api_proxy.auth import API_KEY_PREFIX, APIKeyManager, KeysFileLockTimeout
+from api_proxy.auth import API_KEY_PREFIX, APIKeyManager, KeysFileError, KeysFileLockTimeout
 
 
 class TestCreateCommand:
@@ -262,6 +262,31 @@ class TestFileHandling:
         # Should return empty list, not crash
         assert keys == []
 
+    def test_a_request_does_not_rewrite_a_corrupt_keys_file(self, temp_dir, caplog):
+        """Review item 4 (PR #25): update_last_used skips, with a warning,
+        rather than write over a keys file it cannot parse."""
+        keys_file = temp_dir / "keys.json"
+        manager = APIKeyManager(keys_file)
+        key = manager.create_key("agent")
+        keys_file.write_text("not valid json{{{")
+
+        with caplog.at_level(logging.WARNING, logger="api_proxy.auth"):
+            manager.update_last_used(key)
+
+        assert keys_file.read_text() == "not valid json{{{"
+        assert any("Skipped the last_used_at update" in r.getMessage() for r in caplog.records)
+
+    def test_create_refuses_to_replace_a_corrupt_keys_file(self, temp_dir):
+        keys_file = temp_dir / "keys.json"
+        manager = APIKeyManager(keys_file)
+        manager.create_key("agent-1")
+        keys_file.write_text("not valid json{{{")
+
+        with pytest.raises(KeysFileError, match="keys file"):
+            manager.create_key("agent-2")
+
+        assert keys_file.read_text() == "not valid json{{{"
+
     def test_preserves_existing_keys_when_adding_new(self, temp_dir):
         """Adding a new key should preserve existing keys."""
         keys_file = temp_dir / "keys.json"
@@ -289,8 +314,8 @@ class TestRevocationIsDurable:
         original_load = APIKeyManager._load_keys
         state = {"fired": False}
 
-        def load_then_operator_acts(self):
-            data = original_load(self)
+        def load_then_operator_acts(self, *args, **kwargs):
+            data = original_load(self, *args, **kwargs)
             if not state["fired"]:
                 state["fired"] = True
                 monkeypatch.setattr(APIKeyManager, "_load_keys", original_load)

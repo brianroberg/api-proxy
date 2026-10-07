@@ -7,6 +7,7 @@ agent authorised while the operator believed it was cut off.
 """
 
 import json
+import os
 import sys
 
 import pytest
@@ -157,3 +158,55 @@ def test_a_write_that_cannot_open_or_take_the_lock_says_so_and_exits_3(
     assert len(err.strip().splitlines()) == 1
     assert out == ""
     assert keys_file.read_bytes() == before
+
+
+def _make_unreadable(keys_file):
+    keys_file.chmod(0o000)
+
+
+DAMAGE = [
+    pytest.param(lambda f: f.write_text("not json{{{"), id="not-json"),
+    pytest.param(lambda f: f.write_bytes(b"\xff\xfe{}"), id="not-utf8"),
+    pytest.param(lambda f: f.write_text("[]"), id="not-an-object"),
+    pytest.param(lambda f: f.write_text('{"keys": []}'), id="keys-not-an-object"),
+    pytest.param(
+        _make_unreadable,
+        id="unreadable",
+        marks=pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes"),
+    ),
+]
+
+
+@pytest.mark.parametrize("damage", DAMAGE)
+@pytest.mark.parametrize("argv", WRITES)
+def test_a_write_refuses_to_replace_a_keys_file_it_cannot_read(run, keys_file, argv, damage):
+    """Review item 4 (PR #25): a write used to treat an unreadable or corrupt
+    keys file as empty, so one `create` replaced every key with the new one
+    (and revoke/disable said "not found"). It must refuse instead: one
+    'Error:' line, exit 3, and the file left exactly as it was."""
+    run("create", "--name", "agent")
+    damage(keys_file)
+    before = keys_file.stat()  # works on a mode-000 file too
+
+    try:
+        code, out, err = run(*argv)
+    finally:
+        keys_file.chmod(0o600)
+
+    assert code == 3
+    assert err.startswith("Error: ") and "keys file" in err
+    assert len(err.strip().splitlines()) == 1
+    assert out == ""
+    after = keys_file.stat()  # a save renames a new file into place: new inode
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+
+
+def test_a_missing_keys_file_is_still_created_from_empty(run, keys_file):
+    """Only an unreadable file is refused; a missing one is an empty key set."""
+    assert not keys_file.exists()
+    assert run("create", "--name", "agent")[0] == 0
+    assert list(_stored(keys_file)) == ["agent"]

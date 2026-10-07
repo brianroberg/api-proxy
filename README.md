@@ -135,10 +135,10 @@ uv run api-proxy-keys show --name "email-agent-prod"
 
 The CLI exits `0` on success and `1` when the named key does not exist or
 `create` rejects the name. It exits `3`, with one `Error:` line, when a
-command that changes keys could not take the keys-file lock, because
-another writer kept it or the lock file cannot be opened or locked (see Key
-Storage). Nothing was written, so the command can be run again once the
-cause is dealt with.
+command that changes keys could not take the keys-file lock (another
+writer kept it, or the lock file cannot be opened or locked) or could not
+read an existing keys file (see Key Storage). Nothing was written, so the
+command can be run again once the cause is dealt with.
 
 ### Key Storage
 
@@ -170,6 +170,12 @@ second, and the CLI gives up with an error after about ten. If the lock file
 cannot be opened or locked at all (wrong owner or mode, or a filesystem
 without `flock` support), the server skips the update with a warning and the
 CLI exits with an error without writing.
+
+A command that changes keys treats a missing keys file as empty, but
+refuses to write over one that exists and cannot be read or parsed: it exits
+with an error and leaves the file as it is, rather than replace every key
+in it with only its own change. The server's `last_used_at` update likewise
+skips such a file with a warning.
 
 ### Authentication Errors
 
