@@ -20,6 +20,7 @@ from api_proxy.gmail.models import (
     DraftRequest,
     ModifyMessageRequest,
 )
+from api_proxy.upstream import backend_failure_detail
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +278,7 @@ async def list_messages(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -310,7 +311,7 @@ async def get_message(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -343,7 +344,7 @@ async def get_thread(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -363,7 +364,7 @@ async def list_labels(request: Request, user_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -384,7 +385,7 @@ async def get_label(request: Request, user_id: str, label_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -450,7 +451,7 @@ async def modify_message(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -484,7 +485,7 @@ async def trash_message(request: Request, user_id: str, message_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -518,7 +519,7 @@ async def untrash_message(request: Request, user_id: str, message_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -557,7 +558,7 @@ async def list_drafts(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -587,7 +588,7 @@ async def get_draft(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -623,7 +624,7 @@ async def create_draft(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -661,7 +662,7 @@ async def update_draft(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -691,5 +692,5 @@ async def delete_draft(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e

@@ -21,6 +21,7 @@ from api_proxy.confirmation import (
     get_confirmation_handler,
     requires_confirmation,
 )
+from api_proxy.upstream import backend_failure_detail, lookup_failure_detail
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,8 @@ async def _get_event_or_404(client, path: str) -> httpx.Response:
 
     Maps the failures every write path handles identically: a missing event
     raises a tagged 404 and a backend communication failure raises a tagged
-    502. Any other response is returned for the caller to handle.
+    502 saying the write was not sent. Any other response is returned for the
+    caller to handle.
     """
     try:
         response = await client.request("GET", path)
@@ -145,7 +147,7 @@ async def _get_event_or_404(client, path: str) -> httpx.Response:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=lookup_failure_detail(e),
         ) from e
     if response.status_code == 404:
         raise HTTPException(
@@ -173,7 +175,7 @@ async def _resolve_authenticated_user_email(client) -> str:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=lookup_failure_detail(e),
         ) from e
 
     email = None
@@ -416,7 +418,7 @@ async def list_calendars(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -436,7 +438,7 @@ async def get_calendar(request: Request, calendar_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -496,7 +498,7 @@ async def list_events(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -526,7 +528,7 @@ async def get_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -590,7 +592,7 @@ async def create_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -655,7 +657,7 @@ async def update_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -715,7 +717,7 @@ async def patch_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -776,7 +778,7 @@ async def delete_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -875,5 +877,5 @@ async def respond_to_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
