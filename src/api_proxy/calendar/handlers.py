@@ -143,7 +143,7 @@ async def _get_event_or_404(client, path: str) -> httpx.Response:
     """
     try:
         response = await client.request("GET", path)
-    except (RuntimeError, httpx.HTTPError) as e:
+    except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
@@ -171,7 +171,7 @@ async def _resolve_authenticated_user_email(client) -> str:
     """
     try:
         response = await client.request("GET", "/calendars/primary")
-    except (RuntimeError, httpx.HTTPError) as e:
+    except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
@@ -774,7 +774,7 @@ async def delete_event(
     try:
         response = await client.request("DELETE", path, params=params or None)
         return await forward_response(response)
-    except (RuntimeError, httpx.HTTPError) as e:
+    except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
@@ -873,7 +873,7 @@ async def respond_to_event(
             json_body={"attendees": patched_attendees, "attendeesOmitted": True},
         )
         return await forward_response(patch_response)
-    except (RuntimeError, httpx.HTTPError) as e:
+    except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,

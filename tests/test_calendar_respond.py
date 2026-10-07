@@ -7,6 +7,7 @@ import httpx
 
 from api_proxy.calendar.handlers import build_rsvp_attendees
 from api_proxy.confirmation import ConfirmationOutcome
+from api_proxy.upstream import UpstreamUnavailableError
 
 
 class TestBuildRsvpAttendees:
@@ -69,6 +70,11 @@ class TestBuildRsvpAttendees:
         ]
         result = build_rsvp_attendees(attendees, "me@example.com", "declined")
         assert result == [{"email": "me@example.com", "responseStatus": "declined"}]
+
+
+def _unreachable():
+    """What CalendarClient.request raises when Google cannot be reached."""
+    return UpstreamUnavailableError("www.googleapis.com", httpx.ConnectError("refused"))
 
 
 def _event(attendees, event_id="e1", summary="Team Sync"):
@@ -257,7 +263,7 @@ class TestRespondEndpoint:
     def test_transport_error_during_event_fetch_returns_502(self, client, auth_headers):
         with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get:
             mock_client = AsyncMock()
-            mock_client.request = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+            mock_client.request = AsyncMock(side_effect=_unreachable())
             mock_get.return_value = mock_client
             resp = client.post(
                 RESPOND_PATH, headers=auth_headers, json={"responseStatus": "accepted"}
@@ -273,9 +279,7 @@ class TestRespondEndpoint:
         primary_resp = mock_calendar_response(200, {"id": "me@example.com"})
         with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get:
             mock_client = AsyncMock()
-            mock_client.request = AsyncMock(
-                side_effect=[get_resp, primary_resp, httpx.ConnectError("reset")]
-            )
+            mock_client.request = AsyncMock(side_effect=[get_resp, primary_resp, _unreachable()])
             mock_get.return_value = mock_client
             resp = client.post(
                 RESPOND_PATH, headers=auth_headers, json={"responseStatus": "declined"}
@@ -290,7 +294,7 @@ class TestRespondEndpoint:
         get_resp = mock_calendar_response(200, _event(_default_attendees()))
         with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get:
             mock_client = AsyncMock()
-            mock_client.request = AsyncMock(side_effect=[get_resp, httpx.ConnectError("reset")])
+            mock_client.request = AsyncMock(side_effect=[get_resp, _unreachable()])
             mock_get.return_value = mock_client
             resp = client.post(
                 RESPOND_PATH, headers=auth_headers, json={"responseStatus": "accepted"}

@@ -201,3 +201,45 @@ def test_a_delete_that_fails_after_its_lookup_reports_the_delete_itself(
     assert response.status_code == 502, response.text
     assert response.json()["error"] == error
     assert [sent.method for sent in httpx_mock.get_requests()] == ["GET", "DELETE"]
+
+
+ILLEGAL_HEADER = httpx.LocalProtocolError("Illegal header value b'Bearer mock_access_token\\n'")
+
+
+@pytest.mark.parametrize(
+    "path,body,answered",
+    [
+        pytest.param("/calendar/v3/calendars/primary/events/e1", None, [], id="delete-lookup"),
+        pytest.param("/calendar/v3/calendars/primary/events/e1", None, [EVENT], id="delete"),
+        pytest.param(
+            "/calendar/v3/calendars/primary/events/e1/respond",
+            {"responseStatus": "accepted"},
+            [ATTENDING],
+            id="respond-own-address-lookup",
+        ),
+        pytest.param(
+            "/calendar/v3/calendars/primary/events/e1/respond",
+            {"responseStatus": "accepted"},
+            [ATTENDING, {"id": "me@example.com"}],
+            id="respond-patch",
+        ),
+    ],
+)
+def test_a_proxy_side_error_on_a_calendar_write_is_a_500_without_its_text(
+    client, auth_headers, httpx_mock, path, body, answered
+):
+    """Review item 7 (PR #25): delete and RSVP caught every httpx.HTTPError
+    and answered a 502 carrying httpx's own message, which for an illegal
+    header holds the Authorization value. Like every other route, they must
+    leave a proxy-side error a 500 and keep that text out of the body."""
+    for answer in answered:
+        httpx_mock.add_response(json=answer)
+    httpx_mock.add_exception(ILLEGAL_HEADER)
+
+    response = client.request(
+        "DELETE" if body is None else "POST", path, json=body, headers=auth_headers
+    )
+
+    assert response.status_code == 500
+    assert "Illegal header value" not in response.text
+    assert "mock_access_token" not in response.text
