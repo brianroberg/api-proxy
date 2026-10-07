@@ -454,9 +454,6 @@ class TestDashboardStream:
 
 
 class TestCancelledWaitIsCleanedUp:
-    @pytest.mark.xfail(
-        strict=True, reason="api-proxy #20: a cancelled wait leaves an orphaned queue entry"
-    )
     async def test_cancelled_wait_leaves_nothing_pending(self, web_queue, config_web_confirm):
         """If the coroutine waiting for a decision is cancelled (server shutdown,
         or a caller-side timeout around confirm()), its entry must leave the
@@ -471,6 +468,55 @@ class TestCancelledWaitIsCleanedUp:
             await task
         assert web_queue.get_pending_sync() == []
         assert web_queue._by_id == {}  # the id map must not leak the entry either
+
+    async def test_cancelled_wait_tells_the_dashboard_and_the_operator(
+        self, web_queue, config_web_confirm, monkeypatch
+    ):
+        """api-proxy #20: like expiry, a cancelled wait must reach the dashboard
+        (so the card goes) and the operator's phone (so the "approval needed"
+        push is not acted on), and the stale id must not be approvable."""
+        resolved = []
+        monkeypatch.setattr(
+            notifications,
+            "notify_request_resolved",
+            lambda pending, outcome: resolved.append((pending.id, outcome)),
+        )
+        events = web_queue.subscribe()
+        task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+        added = await asyncio.wait_for(events.get(), 5)
+        request_id = added["pending"][0]["id"]
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert _drain(events) == [{"event": "request_cancelled", "pending": []}]
+        assert resolved == [(request_id, "cancelled")]
+        assert await web_queue.approve(request_id) is False
+
+    async def test_a_decision_landing_just_before_the_cancel_is_not_reported_twice(
+        self, web_queue, config_web_confirm, monkeypatch
+    ):
+        """If the operator's approval removed the entry before the cancellation
+        reached the waiter, the cancel path has nothing left to clean up: no
+        second broadcast and no "cancelled" push on top of the "approved" one."""
+        resolved = []
+        monkeypatch.setattr(
+            notifications,
+            "notify_request_resolved",
+            lambda pending, outcome: resolved.append(outcome),
+        )
+        events = web_queue.subscribe()
+        task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+        added = await asyncio.wait_for(events.get(), 5)
+
+        assert await web_queue.approve(added["pending"][0]["id"]) is True
+        task.cancel()  # before the waiter has run again
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert _drain(events) == [{"event": "request_approved", "pending": []}]
+        assert resolved == ["approved"]
 
 
 class TestDashboardStreamAfterConnect:

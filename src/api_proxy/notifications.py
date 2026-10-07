@@ -212,6 +212,7 @@ def build_resolution_notification(
         "approved": "Approved; the request was forwarded to the backend.",
         "rejected": "Rejected; the caller was told the operator rejected it.",
         "expired": "Expired with no operator response; the caller was told it expired.",
+        "cancelled": "Cancelled; the caller stopped waiting, so nothing was forwarded.",
     }.get(outcome, outcome)
 
     headers = {
@@ -287,6 +288,7 @@ def notify_request_resolved(pending: PendingRequest, outcome: str) -> None:
     """Push a follow-up notification that a request was resolved.
 
     ``outcome`` is a ConfirmationOutcome value string
-    ("approved" / "rejected" / "expired").
+    ("approved" / "rejected" / "expired"), or "cancelled" when the waiting
+    request was cancelled before anyone decided.
     """
     _dispatch(build_resolution_notification, pending, outcome)

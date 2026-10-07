@@ -429,7 +429,7 @@ class TestNoPersonalDataInAnyTitleBranch:
             ("GET", "/gmail/v1/users/me/labels", {}),
         ],
     )
-    @pytest.mark.parametrize("outcome", [None, "approved", "rejected", "expired"])
+    @pytest.mark.parametrize("outcome", [None, "approved", "rejected", "expired", "cancelled"])
     def test_no_sender_or_attendee_anywhere(self, config_web_confirm, method, path, extra, outcome):
         fields = {"event_summary": None, **extra}
         pending = _pending(
@@ -472,3 +472,29 @@ class TestResolutionFollowUpOnReject:
         assert headers["Title"].startswith("Rejected:")
         assert "forwarded" not in body
         assert "the caller was told the operator rejected it" in body
+
+
+class TestResolutionFollowUpOnCancel:
+    async def test_cancelled_wait_pushes_a_cancelled_follow_up(
+        self, web_queue, config_web_confirm, ntfy_send
+    ):
+        """api-proxy #20: a request whose waiter was cancelled (server shutdown,
+        caller gone) gets a follow-up like an expired one, so the operator does
+        not act on the stale "approval needed" push."""
+        task = asyncio.create_task(
+            web_queue.add_request(
+                method="DELETE",
+                path="/calendars/primary/events/event1",
+                event_summary="Team Sync",
+            )
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.05)
+
+        assert ntfy_send.await_count == 2
+        _, headers, body = ntfy_send.await_args_list[1].args
+        assert headers["Title"].startswith("Cancelled:")
+        assert "nothing was forwarded" in body

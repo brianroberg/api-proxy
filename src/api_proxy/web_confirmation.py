@@ -202,6 +202,27 @@ class WebConfirmationQueue:
             # not acted on after the window has already closed.
             notifications.notify_request_resolved(pending, ConfirmationOutcome.EXPIRED.value)
             return ConfirmationOutcome.EXPIRED
+        except asyncio.CancelledError:
+            # The waiter is gone (server shutdown, or a caller-side cancel
+            # around confirm()), so nothing will be forwarded whatever the
+            # operator does. Take the entry off the queue as expiry does;
+            # left there, its card could not be approved and would never
+            # expire. If an approve()/reject() already removed it, that path
+            # has broadcast and notified, so do neither again.
+            async with self._lock:
+                removed = self._by_id.pop(request_id, None)
+                if removed is not None:
+                    try:
+                        self._queue.remove(removed)
+                    except ValueError:
+                        pass  # Already removed
+                pending_snapshot = self.get_pending_sync()
+
+            if removed is not None:
+                logger.info(f"Request {request_id} cancelled while awaiting a decision")
+                await self._notify_subscribers("request_cancelled", pending_snapshot)
+                notifications.notify_request_resolved(removed, "cancelled")
+            raise
 
     @staticmethod
     def _recover_operator_decision(future: asyncio.Future) -> ConfirmationOutcome | None:
