@@ -42,6 +42,11 @@ class KeysFileLockTimeout(KeysFileError, TimeoutError):
     """Another process held the keys-file lock for longer than the wait allowed."""
 
 
+class KeysFileLockError(KeysFileError):
+    """The keys-file lock could not be opened or taken (wrong owner or mode,
+    or a filesystem without flock support)."""
+
+
 class APIKeyManager:
     """Manages API key storage and validation."""
 
@@ -71,12 +76,16 @@ class APIKeyManager:
         killed, so a dead holder does not leave the file locked.
 
         Raises KeysFileLockTimeout if the lock is not free within ``timeout``
-        seconds (default KEYS_LOCK_TIMEOUT_SECONDS).
+        seconds (default KEYS_LOCK_TIMEOUT_SECONDS), and KeysFileLockError if
+        the lock file cannot be opened or locked at all.
         """
         if timeout is None:
             timeout = KEYS_LOCK_TIMEOUT_SECONDS
-        self.keys_file.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            self.keys_file.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as e:
+            raise KeysFileLockError(f"Cannot open the API keys lock {self.lock_file}: {e}") from e
         try:
             deadline = time.monotonic() + timeout
             while True:
@@ -90,6 +99,10 @@ class APIKeyManager:
                             f"lock {self.lock_file}; another api-proxy process holds it"
                         ) from None
                     time.sleep(_LOCK_POLL_SECONDS)
+                except OSError as e:
+                    raise KeysFileLockError(
+                        f"Cannot lock the API keys lock {self.lock_file}: {e}"
+                    ) from e
             yield
         finally:
             os.close(fd)  # releases the lock
@@ -185,9 +198,10 @@ class APIKeyManager:
         The file is loaded under the lock, so a revoke or disable that
         landed after this request was authenticated is kept: a revoked key
         is not written back and a disabled key stays disabled. If the lock
-        is not free within LAST_USED_LOCK_TIMEOUT_SECONDS the timestamp is
-        skipped with a warning: the request is already authenticated, and
-        waiting longer would hold up the server.
+        is not free within LAST_USED_LOCK_TIMEOUT_SECONDS, or cannot be
+        opened or taken at all, the timestamp is skipped with a warning: the
+        request is already authenticated, and waiting longer would hold up
+        the server.
         """
         try:
             with self._locked(LAST_USED_LOCK_TIMEOUT_SECONDS):
@@ -195,8 +209,8 @@ class APIKeyManager:
                 if key in data["keys"]:
                     data["keys"][key]["last_used_at"] = datetime.now(UTC).isoformat()
                     self._save_keys(data)
-        except KeysFileLockTimeout:
-            logger.warning("Skipped the last_used_at update: the API keys file is locked")
+        except KeysFileError as e:
+            logger.warning(f"Skipped the last_used_at update: {e}")
 
     def set_enabled(self, name: str, enabled: bool) -> bool:
         """Enable or disable a key by name. Returns True if successful."""

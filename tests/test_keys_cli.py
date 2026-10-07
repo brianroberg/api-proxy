@@ -138,3 +138,22 @@ def test_a_write_that_cannot_get_the_lock_says_so_and_exits_3(
     assert len(err.strip().splitlines()) == 1
     assert out == ""
     assert keys_file.read_bytes() == before  # nothing was written
+
+
+@pytest.mark.parametrize("argv", WRITES)
+def test_a_write_that_cannot_open_or_take_the_lock_says_so_and_exits_3(
+    run, keys_file, break_keys_lock, argv
+):
+    """Review item 3 (PR #25): a lock file the CLI cannot open or lock is
+    reported like a busy lock: one 'Error:' line, exit 3, nothing written."""
+    run("create", "--name", "agent")
+    before = keys_file.read_bytes()
+    break_keys_lock(keys_file)
+
+    code, out, err = run(*argv)
+
+    assert code == 3
+    assert err.startswith("Error: ") and "lock" in err
+    assert len(err.strip().splitlines()) == 1
+    assert out == ""
+    assert keys_file.read_bytes() == before

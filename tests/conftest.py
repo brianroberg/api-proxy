@@ -1,6 +1,8 @@
 """Pytest fixtures for API proxy tests."""
 
+import errno
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -97,6 +99,39 @@ def lock_holder():
         proc.kill()
         proc.wait()
         proc.stdout.close()
+
+
+@pytest.fixture(
+    params=[
+        "directory",
+        pytest.param(
+            "read-only",
+            marks=pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes"),
+        ),
+        "flock-unsupported",
+    ]
+)
+def break_keys_lock(request, monkeypatch):
+    """Make the keys-file lock impossible to take, three ways: the lock path
+    is a directory, the lock file is not writable by this user, or flock()
+    itself fails as it does on a filesystem without lock support."""
+
+    def _break(keys_file):
+        lock_file = keys_file.with_name(keys_file.name + ".lock")
+        if request.param == "directory":
+            lock_file.unlink(missing_ok=True)
+            lock_file.mkdir()
+        elif request.param == "read-only":
+            lock_file.touch()
+            lock_file.chmod(0o400)
+        else:
+
+            def no_locks(fd, operation):
+                raise OSError(errno.ENOLCK, "No locks available")
+
+            monkeypatch.setattr("api_proxy.auth.fcntl.flock", no_locks)
+
+    return _break
 
 
 @pytest.fixture
