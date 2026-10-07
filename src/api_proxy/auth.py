@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
 from api_proxy.config import get_config
 
@@ -28,8 +29,9 @@ API_KEY_CHARS = string.ascii_lowercase + string.digits
 # load-modify-save, normally milliseconds, so these waits run out only if a
 # holder is stuck.
 KEYS_LOCK_TIMEOUT_SECONDS = 10.0
-# update_last_used runs on the server's event loop, where waiting stalls
-# every request, so it waits less and then skips its bookkeeping.
+# update_last_used runs on every authenticated request, which waits for it
+# (in a worker thread, off the event loop), so it waits less and then skips
+# its bookkeeping.
 LAST_USED_LOCK_TIMEOUT_SECONDS = 1.0
 _LOCK_POLL_SECONDS = 0.01
 
@@ -346,8 +348,10 @@ async def verify_api_key(
             detail={"error": "auth_error", "message": "API key is disabled"},
         )
 
-    # Update last used timestamp
-    manager.update_last_used(key)
+    # Update last used timestamp. Its lock wait blocks the calling thread for
+    # up to LAST_USED_LOCK_TIMEOUT_SECONDS, so it runs in the threadpool:
+    # other requests and the approval dashboard are served meanwhile.
+    await run_in_threadpool(manager.update_last_used, key)
 
     # Store key info in request state for logging
     request.state.api_key_name = key_data.get("name", "unknown")

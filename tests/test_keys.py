@@ -398,9 +398,10 @@ class TestKeysFileLockAcrossProcesses:
     def test_a_request_skips_last_used_rather_than_wait_on_a_held_lock(
         self, temp_dir, lock_holder, monkeypatch, caplog
     ):
-        """update_last_used runs on the server's event loop: a long wait there
-        stalls every request. It is bookkeeping for an already-authenticated
-        request, so it gives up after a short wait and logs a warning."""
+        """Every authenticated request waits for update_last_used, so a long
+        wait there holds each request up. It is bookkeeping for an
+        already-authenticated request, so it gives up after a short wait and
+        logs a warning."""
         monkeypatch.setattr(auth, "LAST_USED_LOCK_TIMEOUT_SECONDS", 0.2)
         keys_file = temp_dir / "keys.json"
         manager = APIKeyManager(keys_file)
