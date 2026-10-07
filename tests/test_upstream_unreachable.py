@@ -1,0 +1,132 @@
+"""api-proxy #18: a transport failure between the proxy and Google is the
+upstream's fault, not a proxy bug. It must come back as a 502 backend_error
+naming the upstream host, with one log line and no traceback, instead of an
+unhandled exception (a 500 and a ~130-line traceback in production)."""
+
+import logging
+
+import httpx
+import pytest
+
+EVENT = {
+    "summary": "Planning",
+    "start": {"dateTime": "2026-10-01T09:00:00-04:00"},
+    "end": {"dateTime": "2026-10-01T10:00:00-04:00"},
+}
+
+ROUTES = [
+    pytest.param(
+        "GET", "/gmail/v1/users/me/messages", None, "gmail.googleapis.com", id="gmail-list"
+    ),
+    pytest.param(
+        "DELETE", "/gmail/v1/users/me/drafts/d1", None, "gmail.googleapis.com", id="gmail-delete"
+    ),
+    pytest.param(
+        "GET",
+        "/calendar/v3/calendars/primary/events",
+        None,
+        "www.googleapis.com",
+        id="calendar-list",
+    ),
+    pytest.param(
+        "POST",
+        "/calendar/v3/calendars/primary/events",
+        EVENT,
+        "www.googleapis.com",
+        id="calendar-create",
+    ),
+]
+
+# The request never left the proxy, so Google cannot have acted on it.
+NOT_SENT = [
+    pytest.param(httpx.ConnectError("All connection attempts failed"), id="ConnectError"),
+    pytest.param(httpx.ConnectTimeout("timed out"), id="ConnectTimeout"),
+]
+# The request may have reached Google, so its outcome is unknown.
+MAYBE_SENT = [
+    pytest.param(httpx.ReadTimeout("timed out"), id="ReadTimeout"),
+    pytest.param(httpx.ReadError("connection reset by peer"), id="ReadError"),
+    pytest.param(
+        httpx.RemoteProtocolError("Server disconnected without sending a response."),
+        id="RemoteProtocolError",
+    ),
+]
+
+
+def _send(client, auth_headers, method, path, body):
+    return client.request(method, path, json=body, headers=auth_headers)
+
+
+def _problems(caplog):
+    """The proxy's own log records at WARNING or above."""
+    return [
+        r for r in caplog.records if r.name.startswith("api_proxy") and r.levelno >= logging.WARNING
+    ]
+
+
+@pytest.mark.parametrize("exc", NOT_SENT + MAYBE_SENT)
+@pytest.mark.parametrize("method,path,body,host", ROUTES)
+def test_upstream_transport_failure_is_a_502_with_one_log_line(
+    client, auth_headers, httpx_mock, caplog, method, path, body, host, exc
+):
+    httpx_mock.add_exception(exc)
+
+    with caplog.at_level(logging.INFO):
+        response = _send(client, auth_headers, method, path, body)
+
+    assert response.status_code == 502, response.text
+    payload = response.json()
+    assert payload["error"] == "backend_error"
+    assert host in payload["message"]
+    assert type(exc).__name__ in payload["message"]
+
+    [line] = _problems(caplog)  # exactly one, and it names the upstream and the error
+    assert host in line.getMessage()
+    assert type(exc).__name__ in line.getMessage()
+    assert not any(r.exc_info for r in caplog.records)  # no traceback anywhere
+
+
+@pytest.mark.parametrize("exc", NOT_SENT)
+def test_a_failure_before_sending_says_the_request_was_not_sent(
+    client, auth_headers, httpx_mock, exc
+):
+    httpx_mock.add_exception(exc)
+
+    response = client.post(
+        "/calendar/v3/calendars/primary/events", json=EVENT, headers=auth_headers
+    )
+
+    assert "was not sent" in response.json()["message"]
+
+
+@pytest.mark.parametrize("exc", MAYBE_SENT)
+def test_a_failure_after_sending_says_the_outcome_is_unknown(client, auth_headers, httpx_mock, exc):
+    """A write that timed out waiting for Google's answer may still have been
+    applied; the message must not claim it was not sent."""
+    httpx_mock.add_exception(exc)
+
+    response = client.post(
+        "/calendar/v3/calendars/primary/events", json=EVENT, headers=auth_headers
+    )
+
+    message = response.json()["message"]
+    assert "outcome is unknown" in message
+    assert "not sent" not in message
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/gmail/v1/users/me/messages", "/calendar/v3/calendars/primary/events"],
+    ids=["gmail", "calendar"],
+)
+def test_a_proxy_side_error_is_not_reported_as_an_upstream_failure(
+    client, auth_headers, httpx_mock, path
+):
+    """The mapping is kept to transport failures on Google's side. A local
+    protocol error means the proxy built a bad request; reporting that as
+    "upstream unreachable" would hide a proxy bug."""
+    httpx_mock.add_exception(httpx.LocalProtocolError("Illegal header value"))
+
+    response = client.get(path, headers=auth_headers)
+
+    assert response.status_code == 500

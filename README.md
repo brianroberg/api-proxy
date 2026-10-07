@@ -171,7 +171,7 @@ API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
 | 403 | `forbidden` | Confirmation rejected by operator |
 | 403 | `confirmation_expired` | Confirmation request expired before an operator responded |
 | 422 | `proxy_error` | Request validation failed (malformed JSON, missing fields) |
-| 502 | `backend_error` | Backend unreachable or authentication failed |
+| 502 | `backend_error` | Backend authentication failed, or Google unreachable / not answering (the message names the host and says whether the request may have reached it) |
 | 4xx/5xx | `backend_error` | Error passed through from Gmail API |
 
 ### Error Response Format

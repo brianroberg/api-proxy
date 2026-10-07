@@ -9,6 +9,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
 from api_proxy.config import get_config
+from api_proxy.upstream import UPSTREAM_FAILURES, UpstreamUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,8 @@ class CalendarClient:
 
         Raises:
             RuntimeError: If credentials are not available
+            UpstreamUnavailableError: If the request failed in transport
+                (a RuntimeError, so handlers answer 502)
         """
         creds = self._get_credentials()
         if creds is None:
@@ -160,35 +163,41 @@ class CalendarClient:
 
         logger.debug(f"Calendar API request: {method} {path}")
 
-        response = await client.request(
-            method=method,
-            url=url,
-            headers={
-                "Authorization": f"Bearer {creds.token}",
-                "Content-Type": "application/json",
-            },
-            params=params,
-            json=json_body,
-        )
+        try:
+            response = await client.request(
+                method=method,
+                url=url,
+                headers={
+                    "Authorization": f"Bearer {creds.token}",
+                    "Content-Type": "application/json",
+                },
+                params=params,
+                json=json_body,
+            )
 
-        logger.debug(f"Calendar API response: {response.status_code}")
+            logger.debug(f"Calendar API response: {response.status_code}")
 
-        # If we get a 401, try refreshing the token and retrying once
-        if response.status_code == 401:
-            logger.info("Got 401 from Calendar API, attempting token refresh")
-            creds = self._force_refresh_credentials()
-            if creds is not None:
-                response = await client.request(
-                    method=method,
-                    url=url,
-                    headers={
-                        "Authorization": f"Bearer {creds.token}",
-                        "Content-Type": "application/json",
-                    },
-                    params=params,
-                    json=json_body,
-                )
-                logger.debug(f"Calendar API retry response: {response.status_code}")
+            # If we get a 401, try refreshing the token and retrying once
+            if response.status_code == 401:
+                logger.info("Got 401 from Calendar API, attempting token refresh")
+                creds = self._force_refresh_credentials()
+                if creds is not None:
+                    response = await client.request(
+                        method=method,
+                        url=url,
+                        headers={
+                            "Authorization": f"Bearer {creds.token}",
+                            "Content-Type": "application/json",
+                        },
+                        params=params,
+                        json=json_body,
+                    )
+                    logger.debug(f"Calendar API retry response: {response.status_code}")
+        except UPSTREAM_FAILURES as e:
+            # Google unreachable or not answering: not a proxy bug. Raised as
+            # a RuntimeError so the handler answers 502 with one log line
+            # instead of letting it escape as a 500 with a traceback.
+            raise UpstreamUnavailableError(httpx.URL(url).host, e) from e
 
         return response
 
