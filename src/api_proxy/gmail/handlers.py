@@ -36,7 +36,8 @@ router = APIRouter(
 )
 
 # Regex for validating userId - basic validation, let Gmail handle the rest
-USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$|^me$")
+# \Z (not $) so a trailing newline can't sneak past the pattern
+USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\Z|^me\Z")
 
 # Regex for validating message/label IDs - alphanumeric with some special chars
 # Gmail IDs are typically base64-like strings

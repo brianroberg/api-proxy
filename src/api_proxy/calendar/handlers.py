@@ -34,10 +34,11 @@ router = APIRouter(
 
 # Regex for validating calendarId - "primary" or email-like strings
 # Note: Pattern includes # for holiday calendars like "en.usa#holiday@group.v.calendar.google.com"
-CALENDAR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+#-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$|^primary$")
+# \Z (not $) so a trailing newline can't sneak past the pattern
+CALENDAR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+#-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\Z|^primary\Z")
 
 # Regex for validating eventId - alphanumeric with some special chars
-EVENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+EVENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+\Z")
 
 
 def validate_calendar_id(calendar_id: str) -> str:

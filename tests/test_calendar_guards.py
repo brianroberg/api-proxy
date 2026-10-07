@@ -363,3 +363,29 @@ def test_the_request_log_names_the_calendar_that_was_served(
 
     [line] = [r.getMessage() for r in caplog.records if r.name == "api_proxy.main"]
     assert line.startswith(f"GET /calendar/v3/calendars/{HOLIDAY}/events - 200")
+
+
+@pytest.mark.parametrize(
+    "method,path,message",
+    [
+        ("GET", "/calendar/v3/calendars/primary/events/abc%0A", "Invalid eventId format"),
+        ("DELETE", "/calendar/v3/calendars/primary/events/abc%0A", "Invalid eventId format"),
+        ("GET", "/calendar/v3/calendars/a@x.com%0A/events", "Invalid calendarId format"),
+        ("GET", "/calendar/v3/calendars/primary%0A/events", "Invalid calendarId format"),
+    ],
+)
+def test_an_id_with_a_trailing_newline_is_rejected_like_any_bad_id(
+    client, auth_headers, api_keys_file, token_file, httpx_mock, method, path, message
+):
+    """Review item 10 (PR #25): the calendar and event id patterns ended in
+    '$', which also matches before a trailing newline. An id ending
+    in %0A passed, and httpx then refused the URL with a 500 (or, for a
+    calendar id, it was sent to Google encoded). It must get the same 400
+    as any other malformed id, before anything is sent."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+
+    response = client.request(method, path, headers=auth_headers)
+
+    assert response.status_code == 400, response.text
+    assert response.json() == {"error": "proxy_error", "message": message}
+    assert httpx_mock.get_requests() == []

@@ -383,3 +383,17 @@ def test_unreachable_gmail_during_label_lookup_fails_before_the_prompt(
     assert response.json()["error"] == "backend_error"
     assert calls == []
     assert [sent.method for sent in httpx_mock.get_requests()] == ["GET"]
+
+
+@pytest.mark.parametrize("user_id", ["a@x.com%0A", "me%0A"])
+def test_a_user_id_with_a_trailing_newline_is_rejected_like_any_bad_id(
+    client, auth_headers, httpx_mock, user_id
+):
+    """Review item 10 (PR #25): USER_ID_PATTERN ended in '$', which also
+    matches before a trailing newline, so 'a@x.com%0A' passed and httpx then
+    refused the URL with a 500. It gets the same 400 as any malformed id."""
+    response = client.get(f"/gmail/v1/users/{user_id}/messages", headers=auth_headers)
+
+    assert response.status_code == 400, response.text
+    assert response.json() == {"error": "proxy_error", "message": "Invalid userId format"}
+    assert httpx_mock.get_requests() == []
