@@ -977,9 +977,18 @@ Each queued request sends one high-priority notification containing:
   `http://HOST:PORT`.
 
 When the request is resolved — approved, rejected, or expired — a short
-low-priority follow-up is sent so a stale notification isn't acted on. The
-same follow-up ("Cancelled") is sent when the waiting request is cancelled
-before anyone decides, for example when the proxy shuts down.
+low-priority follow-up is sent so a stale notification isn't acted on. A
+"Cancelled" follow-up is sent if the proxy's own wait for the decision is
+cancelled inside the process before anyone decides, as when a proxy run in
+a terminal is forced to quit with a second Ctrl-C; the push may not get out
+before the process exits.
+
+A container restart does not send it. As `api-proxy` runs uvicorn, the stop
+signal Docker sends (SIGTERM) makes it wait for open requests to finish,
+including one waiting for approval, and Docker kills it when its stop
+timeout runs out (10 s by default). So approvals pending at a restart are
+dropped without a "Cancelled" push, and their "Approval needed" push stays
+on the phone.
 
 Notifications are strictly best-effort: sends are fire-and-forget with a
 short timeout, and an ntfy outage can never fail, block, or delay the
@@ -1067,7 +1076,7 @@ Server-Sent Events stream for real-time queue updates.
 - `request_approved` - Request was approved
 - `request_rejected` - Request was rejected
 - `request_timeout` - Request timed out
-- `request_cancelled` - The waiting request was cancelled (for example, the server shut down) before anyone decided; nothing was forwarded
+- `request_cancelled` - The proxy's wait for a decision was cancelled inside the process before anyone decided; nothing was forwarded. A container restart does not send it (see Approval Notifications)
 
 **Example:**
 ```bash
