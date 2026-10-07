@@ -223,7 +223,6 @@ def test_a_non_json_gmail_error_is_reported_as_a_backend_error(client, auth_head
     }
 
 
-@pytest.mark.xfail(strict=True, reason="api-proxy #21: draft delete answers 204 with a body")
 def test_draft_delete_answers_204_with_no_body(client, auth_headers, httpx_mock):
     """RFC 9110: a 204 carries no content. The handler returns
     JSONResponse(status_code=204, content=None), which renders the body

@@ -217,9 +217,6 @@ def test_delete_forwards_send_updates_and_passes_the_204_through(
     }
 
 
-@pytest.mark.xfail(
-    strict=True, reason="api-proxy #21: calendar delete also answers 204 with a 'null' body"
-)
 def test_delete_answers_204_with_no_body(client, auth_headers, api_keys_file, token_file, backend):
     _config(api_keys_file, token_file, ConfirmationMode.NONE)
     mock_client, _ = backend

@@ -8,7 +8,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from api_proxy.auth import verify_api_key
 from api_proxy.calendar.client import get_calendar_client
@@ -75,13 +75,15 @@ def validate_event_id(event_id: str) -> str:
     return event_id
 
 
-async def forward_response(response) -> JSONResponse:
+async def forward_response(response) -> Response:
     """Forward a Calendar API response to the caller."""
     try:
-        # Handle 204 No Content responses (returned by DELETE operations)
-        # These have no body, so we can't call response.json()
+        # Handle 204 No Content responses (returned by DELETE operations).
+        # These have no body, so we can't call response.json(), and the reply
+        # must carry none either: JSONResponse(content=None) would render
+        # "null", which uvicorn rejects as longer than the Content-Length.
         if response.status_code == 204:
-            return JSONResponse(status_code=204, content=None)
+            return Response(status_code=204)
 
         content = response.json()
         # Check if this is a Calendar API error

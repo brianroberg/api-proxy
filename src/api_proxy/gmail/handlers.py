@@ -6,7 +6,7 @@ import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from api_proxy.auth import verify_api_key
 from api_proxy.confirmation import (
@@ -682,7 +682,10 @@ async def delete_draft(
     try:
         response = await client.request("DELETE", path)
         if response.status_code == 204:
-            return JSONResponse(status_code=204, content=None)
+            # A 204 carries no content (RFC 9110). JSONResponse(content=None)
+            # would render the body "null", which uvicorn then rejects as
+            # longer than the declared Content-Length.
+            return Response(status_code=204)
         return await forward_response(response)
     except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
