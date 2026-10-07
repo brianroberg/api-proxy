@@ -198,7 +198,7 @@ skips such a file with a warning.
 | 403 | `forbidden` | Confirmation rejected by operator |
 | 403 | `confirmation_expired` | Confirmation request expired before an operator responded |
 | 422 | `proxy_error` | Request validation failed (malformed JSON, missing fields) |
-| 502 | `backend_error` | Backend authentication failed, or Google could not be reached and the request was not sent (the message names the host). Also returned when a lookup the proxy makes before a calendar write (delete, RSVP) fails: the write was not sent |
+| 502 | `backend_error` | Backend authentication failed, or Google could not be reached and the request was not sent (the message names the host). Also returned when Google cannot be reached for a lookup the proxy makes before a write (a calendar delete or RSVP, or a Gmail change that needs approval): the write was not sent, and no approval was requested |
 | 502 | `backend_outcome_unknown` | No complete answer from Google after the request may have reached it (read timeout, dropped connection), so a write may or may not have been applied: re-read before retrying a write. This value is additive: the status is the same 502, so a caller that checks only the status is unaffected |
 | 4xx/5xx | `backend_error` | Error passed through from Gmail API |
 

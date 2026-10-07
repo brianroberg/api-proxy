@@ -20,7 +20,11 @@ from api_proxy.gmail.models import (
     DraftRequest,
     ModifyMessageRequest,
 )
-from api_proxy.upstream import backend_failure_detail
+from api_proxy.upstream import (
+    UpstreamUnavailableError,
+    backend_failure_detail,
+    lookup_failure_detail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +161,17 @@ async def handle_confirmation(
     )
 
 
+def _lookup_failed(e: UpstreamUnavailableError) -> HTTPException:
+    """
+    The 502 for a lookup made ahead of an approval prompt that could not reach
+    Google. Raised before the prompt, as the calendar routes do, so the
+    operator is not asked to approve a write that cannot be sent; other
+    lookup failures still fall back to a prompt without the details.
+    """
+    logger.error(f"Backend communication error: {e}")
+    return HTTPException(status_code=502, detail=lookup_failure_detail(e))
+
+
 async def _resolve_label_names(user_id: str, label_ids: list[str]) -> list[str]:
     """
     Resolve Gmail label IDs to human-readable names.
@@ -183,6 +198,8 @@ async def _resolve_label_names(user_id: str, label_ids: list[str]) -> list[str]:
         data = response.json()
         id_to_name = {label["id"]: label["name"] for label in data.get("labels", [])}
         return [id_to_name.get(lid, lid) for lid in label_ids]
+    except UpstreamUnavailableError as e:
+        raise _lookup_failed(e) from e
     except Exception as e:
         logger.warning(f"Exception resolving label names: {e}")
         return label_ids
@@ -196,7 +213,8 @@ async def _fetch_message_metadata(user_id: str, message_id: str) -> tuple[str | 
         Tuple of (sender, subject). Returns (None, None) on non-fatal errors.
 
     Raises:
-        HTTPException: If the message does not exist (404).
+        HTTPException: If the message does not exist (404), or Google could
+            not be reached (502, before any approval is requested).
     """
     client = get_gmail_client()
     try:
@@ -232,6 +250,8 @@ async def _fetch_message_metadata(user_id: str, message_id: str) -> tuple[str | 
         return sender, subject
     except HTTPException:
         raise
+    except UpstreamUnavailableError as e:
+        raise _lookup_failed(e) from e
     except Exception as e:
         logger.warning(f"Exception fetching message metadata: {e}")
         return None, None

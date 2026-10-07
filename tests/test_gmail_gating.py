@@ -9,9 +9,11 @@ here is registered with its method, and the confirmation handler is recorded.
 """
 
 import json
+import logging
 import re
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from api_proxy.confirmation import ConfirmationHandler, ConfirmationOutcome
@@ -324,3 +326,60 @@ def test_an_unknown_label_id_is_shown_as_its_id(
 
     [request] = calls
     assert request.labels_to_remove == ["Custom", "Label_9"]
+
+
+UNREACHABLE = [
+    pytest.param(httpx.ConnectError("All connection attempts failed"), id="ConnectError"),
+    pytest.param(httpx.ReadTimeout("timed out"), id="ReadTimeout"),
+]
+
+
+def _problems(caplog):
+    return [
+        r for r in caplog.records if r.name.startswith("api_proxy") and r.levelno >= logging.WARNING
+    ]
+
+
+@pytest.mark.parametrize("exc", UNREACHABLE)
+@pytest.mark.parametrize("op", ["trash", "untrash"])
+def test_unreachable_gmail_fails_before_any_approval_prompt(
+    client, auth_headers, config_confirm_modify, httpx_mock, recorded_confirm, caplog, op, exc
+):
+    """Review item 8 (PR #25): when Google cannot be reached, the metadata
+    lookup used to swallow the failure, so the operator got an approval push
+    for a message the card could not name, and the request then failed
+    after approval anyway. Like the calendar routes, it fails first, with a
+    502 saying the write was not sent and no prompt."""
+    calls, _ = recorded_confirm
+    httpx_mock.add_exception(exc, method="GET", url=METADATA_URL)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(f"/gmail/v1/users/me/messages/m1/{op}", headers=auth_headers)
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    assert body["error"] == "backend_error"
+    assert "the write was not sent" in body["message"]
+    assert calls == []
+    assert [sent.method for sent in httpx_mock.get_requests()] == ["GET"]
+    [line] = _problems(caplog)
+    assert "gmail.googleapis.com" in line.getMessage()
+
+
+def test_unreachable_gmail_during_label_lookup_fails_before_the_prompt(
+    client, auth_headers, config_confirm_all, httpx_mock, recorded_confirm
+):
+    """The same for the label-name lookup a confirmed modify makes first."""
+    calls, _ = recorded_confirm
+    httpx_mock.add_exception(httpx.ConnectError("refused"), method="GET", url=f"{GMAIL}/labels")
+
+    response = client.post(
+        "/gmail/v1/users/me/messages/m1/modify",
+        json={"addLabelIds": ["Label_1"]},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 502, response.text
+    assert response.json()["error"] == "backend_error"
+    assert calls == []
+    assert [sent.method for sent in httpx_mock.get_requests()] == ["GET"]
