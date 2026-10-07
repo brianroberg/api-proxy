@@ -150,6 +150,17 @@ API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
 }
 ```
 
+Writers take an exclusive lock on a sibling file (the keys file's name plus
+`.lock`, e.g. `api_keys.json.lock`) for each load-modify-save: the CLI
+commands that change keys, and the server when it records `last_used_at`.
+So a `revoke` or `disable` made while a request from that key is in flight
+is not undone when that request saves its timestamp; the in-flight request
+itself still completes, and later ones are refused. On a local filesystem
+the lock is released when its holder exits, including a crash, so the
+`.lock` file left behind is empty and harmless. If the lock stays busy, the
+server skips the `last_used_at` update (with a warning) after about a
+second, and the CLI gives up with an error after about ten.
+
 ### Authentication Errors
 
 | Scenario | Status Code | Response |

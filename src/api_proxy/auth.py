@@ -1,11 +1,14 @@
 """API key authentication middleware and utilities."""
 
+import fcntl
 import json
 import logging
 import os
 import secrets
 import string
 import tempfile
+import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -21,12 +24,71 @@ API_KEY_PREFIX = "aproxy_"
 API_KEY_LENGTH = 32
 API_KEY_CHARS = string.ascii_lowercase + string.digits
 
+# How long a writer waits for the keys-file lock. A holder keeps it for one
+# load-modify-save, normally milliseconds, so these waits run out only if a
+# holder is stuck.
+KEYS_LOCK_TIMEOUT_SECONDS = 10.0
+# update_last_used runs on the server's event loop, where waiting stalls
+# every request, so it waits less and then skips its bookkeeping.
+LAST_USED_LOCK_TIMEOUT_SECONDS = 1.0
+_LOCK_POLL_SECONDS = 0.01
+
+
+class KeysFileLockTimeout(TimeoutError):
+    """Another process held the keys-file lock for longer than the wait allowed."""
+
 
 class APIKeyManager:
     """Manages API key storage and validation."""
 
     def __init__(self, keys_file: Path):
         self.keys_file = keys_file
+
+    @property
+    def lock_file(self) -> Path:
+        """The lock file every writer takes, next to the keys file."""
+        return self.keys_file.with_name(self.keys_file.name + ".lock")
+
+    @contextmanager
+    def _locked(self, timeout: float | None = None):
+        """
+        Hold the keys-file write lock for one load-modify-save.
+
+        Every writer takes it: the server's update_last_used and the
+        api-proxy-keys CLI, which runs as a separate process. Each one loads
+        the file only after acquiring it, so a save cannot put back a key
+        that another writer revoked or re-enable one it disabled.
+
+        It is an flock on a sibling ".lock" file. The keys file itself is
+        replaced by a rename on every save, so a lock on it would sit on a
+        file the next writer never opens. flock (unlike lockf) also excludes
+        two descriptors in the same process. The kernel drops the lock when
+        the descriptor is closed, which includes the holder exiting or being
+        killed, so a dead holder does not leave the file locked.
+
+        Raises KeysFileLockTimeout if the lock is not free within ``timeout``
+        seconds (default KEYS_LOCK_TIMEOUT_SECONDS).
+        """
+        if timeout is None:
+            timeout = KEYS_LOCK_TIMEOUT_SECONDS
+        self.keys_file.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise KeysFileLockTimeout(
+                            f"Timed out after {timeout:g}s waiting for the API keys "
+                            f"lock {self.lock_file}; another api-proxy process holds it"
+                        ) from None
+                    time.sleep(_LOCK_POLL_SECONDS)
+            yield
+        finally:
+            os.close(fd)  # releases the lock
 
     def _load_keys(self) -> dict:
         """Load keys from file. Creates empty structure if file doesn't exist."""
@@ -67,29 +129,30 @@ class APIKeyManager:
 
     def create_key(self, name: str) -> str:
         """Create a new API key with the given name."""
-        data = self._load_keys()
+        with self._locked():
+            data = self._load_keys()
 
-        # Check for duplicate names
-        for key_data in data["keys"].values():
-            if key_data.get("name") == name:
-                raise ValueError(f"API key with name '{name}' already exists")
+            # Check for duplicate names
+            for key_data in data["keys"].values():
+                if key_data.get("name") == name:
+                    raise ValueError(f"API key with name '{name}' already exists")
 
-        # Validate name
-        if not name or len(name) > 64:
-            raise ValueError("Name must be between 1 and 64 characters")
-        if not name.replace("-", "").replace("_", "").isalnum():
-            raise ValueError(
-                "Name must contain only alphanumeric characters, hyphens, and underscores"
-            )
+            # Validate name
+            if not name or len(name) > 64:
+                raise ValueError("Name must be between 1 and 64 characters")
+            if not name.replace("-", "").replace("_", "").isalnum():
+                raise ValueError(
+                    "Name must contain only alphanumeric characters, hyphens, and underscores"
+                )
 
-        key = self.generate_key()
-        data["keys"][key] = {
-            "name": name,
-            "created_at": datetime.now(UTC).isoformat(),
-            "last_used_at": None,
-            "enabled": True,
-        }
-        self._save_keys(data)
+            key = self.generate_key()
+            data["keys"][key] = {
+                "name": name,
+                "created_at": datetime.now(UTC).isoformat(),
+                "last_used_at": None,
+                "enabled": True,
+            }
+            self._save_keys(data)
         return key
 
     def get_key_by_name(self, name: str) -> tuple[str, dict] | None:
@@ -112,35 +175,50 @@ class APIKeyManager:
         return data["keys"].get(key)
 
     def update_last_used(self, key: str) -> None:
-        """Update the last_used_at timestamp for a key."""
-        data = self._load_keys()
-        if key in data["keys"]:
-            data["keys"][key]["last_used_at"] = datetime.now(UTC).isoformat()
-            self._save_keys(data)
+        """
+        Update the last_used_at timestamp for a key.
+
+        The file is loaded under the lock, so a revoke or disable that
+        landed after this request was authenticated is kept: a revoked key
+        is not written back and a disabled key stays disabled. If the lock
+        is not free within LAST_USED_LOCK_TIMEOUT_SECONDS the timestamp is
+        skipped with a warning: the request is already authenticated, and
+        waiting longer would hold up the server.
+        """
+        try:
+            with self._locked(LAST_USED_LOCK_TIMEOUT_SECONDS):
+                data = self._load_keys()
+                if key in data["keys"]:
+                    data["keys"][key]["last_used_at"] = datetime.now(UTC).isoformat()
+                    self._save_keys(data)
+        except KeysFileLockTimeout:
+            logger.warning("Skipped the last_used_at update: the API keys file is locked")
 
     def set_enabled(self, name: str, enabled: bool) -> bool:
         """Enable or disable a key by name. Returns True if successful."""
-        data = self._load_keys()
-        for key, key_data in data["keys"].items():
-            if key_data.get("name") == name:
-                data["keys"][key]["enabled"] = enabled
-                self._save_keys(data)
-                return True
+        with self._locked():
+            data = self._load_keys()
+            for key, key_data in data["keys"].items():
+                if key_data.get("name") == name:
+                    data["keys"][key]["enabled"] = enabled
+                    self._save_keys(data)
+                    return True
         return False
 
     def revoke_key(self, name: str) -> bool:
         """Permanently delete a key by name. Returns True if successful."""
-        data = self._load_keys()
-        key_to_delete = None
-        for key, key_data in data["keys"].items():
-            if key_data.get("name") == name:
-                key_to_delete = key
-                break
+        with self._locked():
+            data = self._load_keys()
+            key_to_delete = None
+            for key, key_data in data["keys"].items():
+                if key_data.get("name") == name:
+                    key_to_delete = key
+                    break
 
-        if key_to_delete:
-            del data["keys"][key_to_delete]
-            self._save_keys(data)
-            return True
+            if key_to_delete:
+                del data["keys"][key_to_delete]
+                self._save_keys(data)
+                return True
         return False
 
     def list_keys(self) -> list[dict]:
