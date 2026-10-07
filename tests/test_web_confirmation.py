@@ -518,6 +518,38 @@ class TestCancelledWaitIsCleanedUp:
         assert _drain(events) == [{"event": "request_approved", "pending": []}]
         assert resolved == ["approved"]
 
+    @pytest.mark.parametrize("timeout", [1.0, None], ids=["wait_for", "bare-await"])
+    @pytest.mark.parametrize("decide", ["approve", "reject"])
+    async def test_a_decision_landing_just_after_the_cancel_still_reports_the_cancel(
+        self, web_queue, config_web_confirm, monkeypatch, decide, timeout
+    ):
+        """Review item 6 (PR #25): Task.cancel() cancels the waiter's future at
+        once, but the waiter's own cleanup runs a step later. A decision landing
+        in between finds the future cancelled, takes the entry off the queue
+        and reports nothing, since it did not take effect. The cancellation
+        must still reach the dashboard and the phone, exactly once."""
+        config_web_confirm.confirmation_timeout = timeout
+        resolved = []
+        monkeypatch.setattr(
+            notifications,
+            "notify_request_resolved",
+            lambda pending, outcome: resolved.append((pending.id, outcome)),
+        )
+        events = web_queue.subscribe()
+        task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
+        added = await asyncio.wait_for(events.get(), 5)
+        request_id = added["pending"][0]["id"]
+
+        task.cancel()
+        assert not task.done()  # the waiter has not run its cleanup yet
+        assert await getattr(web_queue, decide)(request_id) is False
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert _drain(events) == [{"event": "request_cancelled", "pending": []}]
+        assert resolved == [(request_id, "cancelled")]
+        assert web_queue.get_pending_sync() == [] and web_queue._by_id == {}
+
 
 class TestDashboardStreamAfterConnect:
     """Frames after the first, the keepalive, and the endpoint itself: the

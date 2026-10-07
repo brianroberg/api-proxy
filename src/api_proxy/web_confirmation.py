@@ -203,12 +203,10 @@ class WebConfirmationQueue:
             notifications.notify_request_resolved(pending, ConfirmationOutcome.EXPIRED.value)
             return ConfirmationOutcome.EXPIRED
         except asyncio.CancelledError:
-            # The waiter is gone (server shutdown, or a caller-side cancel
-            # around confirm()), so nothing will be forwarded whatever the
-            # operator does. Take the entry off the queue as expiry does;
-            # left there, its card could not be approved and would never
-            # expire. If an approve()/reject() already removed it, that path
-            # has broadcast and notified, so do neither again.
+            # This wait was cancelled inside the process, so nothing will be
+            # forwarded whatever the operator does. Take the entry off the
+            # queue as expiry does; left there, its card could not be
+            # approved and would never expire.
             async with self._lock:
                 removed = self._by_id.pop(request_id, None)
                 if removed is not None:
@@ -218,10 +216,16 @@ class WebConfirmationQueue:
                         pass  # Already removed
                 pending_snapshot = self.get_pending_sync()
 
-            if removed is not None:
+            # Report the cancellation unless an operator decision is recorded
+            # on the future, in which case approve()/reject() has already
+            # broadcast and pushed it. Whether the entry was still here does
+            # not decide this: Task.cancel() cancels the future at once, and a
+            # decision landing before this cleanup runs finds it cancelled,
+            # removes the entry and reports nothing, leaving the report to us.
+            if self._recover_operator_decision(future) is None:
                 logger.info(f"Request {request_id} cancelled while awaiting a decision")
                 await self._notify_subscribers("request_cancelled", pending_snapshot)
-                notifications.notify_request_resolved(removed, "cancelled")
+                notifications.notify_request_resolved(pending, "cancelled")
             raise
 
     @staticmethod
@@ -271,12 +275,13 @@ class WebConfirmationQueue:
             pending_snapshot = self.get_pending_sync()
 
         if not resolved:
-            # The future was already done - typically cancelled by the
-            # expiring wait_for an instant before the operator's click
-            # landed. The approval did NOT take effect (the caller was told
-            # the request expired and nothing was forwarded), so report
-            # "not found or already processed" rather than a phantom
-            # success, and broadcast no request_approved event.
+            # The future was already done - cancelled by the expiring
+            # wait_for, or by a cancelled wait, an instant before the
+            # operator's click landed. The approval did NOT take effect and
+            # nothing will be forwarded, so report "not found or already
+            # processed" rather than a phantom success, and broadcast no
+            # request_approved event. The waiter reports the expiry or the
+            # cancellation itself.
             logger.info(f"Request {request_id} was already resolved; approve ignored")
             return False
 
