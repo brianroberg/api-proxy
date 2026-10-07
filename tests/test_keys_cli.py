@@ -11,6 +11,7 @@ import sys
 
 import pytest
 
+from api_proxy import auth
 from api_proxy import keys as keys_cli
 from api_proxy.auth import APIKeyManager
 
@@ -108,3 +109,32 @@ def test_create_with_a_duplicate_name_fails_and_adds_nothing(run, keys_file):
     assert code == 1
     assert "already exists" in err
     assert list(_stored(keys_file)) == ["agent"]
+
+
+WRITES = [
+    pytest.param(("create", "--name", "other"), id="create"),
+    pytest.param(("revoke", "--name", "agent"), id="revoke"),
+    pytest.param(("disable", "--name", "agent"), id="disable"),
+    pytest.param(("enable", "--name", "agent"), id="enable"),
+]
+
+
+@pytest.mark.parametrize("argv", WRITES)
+def test_a_write_that_cannot_get_the_lock_says_so_and_exits_3(
+    run, keys_file, lock_holder, monkeypatch, argv
+):
+    """Review item 2 (PR #25): when another process keeps the keys-file lock,
+    a write gives up. It must say so on one 'Error:' line, not a traceback,
+    and exit 3, so a script can tell 'try again' from 'no such key' (1)."""
+    monkeypatch.setattr(auth, "KEYS_LOCK_TIMEOUT_SECONDS", 0.2)
+    run("create", "--name", "agent")
+    before = keys_file.read_bytes()
+    lock_holder(keys_file, 30)
+
+    code, out, err = run(*argv)
+
+    assert code == 3
+    assert err.startswith("Error: ") and "lock" in err
+    assert len(err.strip().splitlines()) == 1
+    assert out == ""
+    assert keys_file.read_bytes() == before  # nothing was written

@@ -133,6 +133,12 @@ uv run api-proxy-keys revoke --name "email-agent-prod"
 uv run api-proxy-keys show --name "email-agent-prod"
 ```
 
+The CLI exits `0` on success and `1` when the named key does not exist or
+`create` rejects the name. It exits `3`, with one `Error:` line, when a
+command that changes keys could not get the keys-file lock (see Key
+Storage); nothing was written, so the command can be run again once the
+other writer has finished.
+
 ### Key Storage
 
 API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):

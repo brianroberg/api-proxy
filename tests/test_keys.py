@@ -2,8 +2,6 @@
 
 import json
 import logging
-import subprocess
-import sys
 import threading
 import time
 
@@ -323,40 +321,6 @@ class TestRevocationIsDurable:
         keys_file = temp_dir / "keys.json"
         key = self._interleave(keys_file, monkeypatch, lambda m: m.set_enabled("agent", False))
         assert APIKeyManager(keys_file).validate_key(key)["enabled"] is False
-
-
-# Holds the keys-file lock from a separate process, as the api-proxy-keys CLI
-# does against the server. Prints "held" once it has the lock.
-_HOLD_LOCK = """
-import sys, time
-from pathlib import Path
-from api_proxy.auth import APIKeyManager
-with APIKeyManager(Path(sys.argv[1]))._locked():
-    print("held", flush=True)
-    time.sleep(float(sys.argv[2]))
-"""
-
-
-@pytest.fixture
-def lock_holder():
-    """Start a separate process holding the keys-file lock for `seconds`."""
-    procs = []
-
-    def start(keys_file, seconds):
-        proc = subprocess.Popen(
-            [sys.executable, "-c", _HOLD_LOCK, str(keys_file), str(seconds)],
-            stdout=subprocess.PIPE,
-            text=True,
-        )
-        procs.append(proc)
-        assert proc.stdout.readline().strip() == "held"
-        return proc
-
-    yield start
-    for proc in procs:
-        proc.kill()
-        proc.wait()
-        proc.stdout.close()
 
 
 class TestKeysFileLockAcrossProcesses:

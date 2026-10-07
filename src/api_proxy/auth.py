@@ -34,7 +34,11 @@ LAST_USED_LOCK_TIMEOUT_SECONDS = 1.0
 _LOCK_POLL_SECONDS = 0.01
 
 
-class KeysFileLockTimeout(TimeoutError):
+class KeysFileError(Exception):
+    """The keys file could not be safely locked or read, so nothing was written."""
+
+
+class KeysFileLockTimeout(KeysFileError, TimeoutError):
     """Another process held the keys-file lock for longer than the wait allowed."""
 
 
