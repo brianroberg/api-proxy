@@ -347,6 +347,16 @@ class TestRevocationIsDurable:
         key = self._interleave(keys_file, monkeypatch, lambda m: m.set_enabled("agent", False))
         assert APIKeyManager(keys_file).validate_key(key)["enabled"] is False
 
+    def test_a_key_created_during_a_request_is_kept(self, temp_dir, monkeypatch):
+        """Review item 12 (PR #25): create_key takes the lock too. Without it,
+        a key created inside a request's load-to-save window is saved over by
+        that request: the CLI prints the new key, and the key then fails."""
+        keys_file = temp_dir / "keys.json"
+        created = []
+        self._interleave(keys_file, monkeypatch, lambda m: created.append(m.create_key("new")))
+        [new_key] = created
+        assert APIKeyManager(keys_file).validate_key(new_key) is not None
+
 
 class TestKeysFileLockAcrossProcesses:
     """api-proxy #19: the CLI and the server are separate processes, so the

@@ -10,9 +10,14 @@ applied. A caller that switches on ``error`` can then re-read before retrying
 a write instead of treating it as a definite failure."""
 
 import logging
+from unittest.mock import patch
 
 import httpx
 import pytest
+
+from api_proxy.calendar.client import CalendarClient
+from api_proxy.gmail.client import GmailClient
+from api_proxy.upstream import UpstreamUnavailableError
 
 EVENT = {
     "summary": "Planning",
@@ -243,3 +248,47 @@ def test_a_proxy_side_error_on_a_calendar_write_is_a_500_without_its_text(
     assert response.status_code == 500
     assert "Illegal header value" not in response.text
     assert "mock_access_token" not in response.text
+
+
+@pytest.mark.parametrize(
+    "client_class,url,path",
+    [
+        pytest.param(
+            GmailClient,
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+            "/gmail/v1/users/me/labels",
+            id="gmail",
+        ),
+        pytest.param(
+            CalendarClient,
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+            "/calendars/primary/events",
+            id="calendar",
+        ),
+    ],
+)
+async def test_a_transport_failure_on_the_retry_after_a_401_is_an_upstream_failure(
+    test_config, httpx_mock, client_class, url, path
+):
+    """Review item 12 (PR #25): both clients retry once after a 401 with a
+    refreshed token. The transport mapping must cover that retry too (the
+    first request after a token expiry on a fresh container), or it escapes
+    as a 500 with a traceback. Only Credentials.refresh is patched."""
+    httpx_mock.add_response(method="GET", url=url, status_code=401, json={})
+    httpx_mock.add_exception(httpx.ConnectError("All connection attempts failed"), url=url)
+
+    def refresh(creds, request):
+        creds.token = "fresh-token"
+
+    client = client_class()
+    try:
+        with patch("google.oauth2.credentials.Credentials.refresh", refresh):
+            with pytest.raises(UpstreamUnavailableError, match="was not sent"):
+                await client.request("GET", path)
+    finally:
+        await client.close()
+
+    assert [r.headers["Authorization"] for r in httpx_mock.get_requests()] == [
+        "Bearer mock_access_token",
+        "Bearer fresh-token",
+    ]

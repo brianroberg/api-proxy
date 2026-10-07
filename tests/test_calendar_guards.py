@@ -346,6 +346,69 @@ def test_a_write_to_a_hash_calendar_is_judged_on_the_path_the_router_runs(
     assert unquote(sent.url.raw_path.decode()) == f"/calendar/v3/calendars/{HOLIDAY}/events"
 
 
+ATTENDED_EVENT = dict(EVENT, id="e1", attendees=[{"email": "me@example.com"}])
+
+
+@pytest.mark.parametrize(
+    "method,suffix,body,upstream",
+    [
+        pytest.param("GET", "", None, [("GET", "")], id="get_calendar"),
+        pytest.param("GET", "/events", None, [("GET", "/events")], id="list_events"),
+        pytest.param("GET", "/events/e1", None, [("GET", "/events/e1")], id="get_event"),
+        pytest.param("POST", "/events", EVENT, [("POST", "/events")], id="create_event"),
+        pytest.param("PUT", "/events/e1", EVENT, [("PUT", "/events/e1")], id="update_event"),
+        pytest.param(
+            "PATCH", "/events/e1", {"summary": "Moved"}, [("PATCH", "/events/e1")], id="patch_event"
+        ),
+        pytest.param(
+            "DELETE",
+            "/events/e1",
+            None,
+            [("GET", "/events/e1"), ("DELETE", "/events/e1")],
+            id="delete_event",
+        ),
+        pytest.param(
+            "POST",
+            "/events/e1/respond",
+            {"responseStatus": "accepted"},
+            [("GET", "/events/e1"), ("PATCH", "/events/e1")],
+            id="respond_to_event",
+        ),
+    ],
+)
+def test_every_calendar_handler_sends_a_hash_calendar_id_intact(
+    client, auth_headers, api_keys_file, token_file, httpx_mock, method, suffix, body, upstream
+):
+    """Review item 12 (PR #25): each of the eight calendar handlers builds its
+    own upstream path, and only list and create were pinned. Dropping
+    calendar_id_segment() from any other one passed the suite, and for a
+    delete it would send DELETE /calendars/en.usa, a calendar delete on the
+    truncated id."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+
+    def answer(request):
+        if request.url.path == "/calendar/v3/calendars/primary":  # RSVP's own-address lookup
+            return httpx.Response(200, json={"id": "me@example.com"})
+        return httpx.Response(200, json=ATTENDED_EVENT)
+
+    httpx_mock.add_callback(answer, is_reusable=True)
+
+    response = client.request(
+        method,
+        f"/calendar/v3/calendars/{HOLIDAY.replace('#', '%23')}{suffix}",
+        json=body,
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    sent = [
+        (r.method, unquote(r.url.raw_path.decode().partition("?")[0]))
+        for r in httpx_mock.get_requests()
+        if r.url.path != "/calendar/v3/calendars/primary"
+    ]
+    assert sent == [(m, f"/calendar/v3/calendars/{HOLIDAY}{tail}") for m, tail in upstream]
+
+
 def test_the_request_log_names_the_calendar_that_was_served(
     client, auth_headers, api_keys_file, token_file, httpx_mock, caplog
 ):

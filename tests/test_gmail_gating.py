@@ -226,10 +226,11 @@ def test_a_non_json_gmail_error_is_reported_as_a_backend_error(client, auth_head
 
 
 def test_draft_delete_answers_204_with_no_body(client, auth_headers, httpx_mock):
-    """RFC 9110: a 204 carries no content. The handler returns
+    """RFC 9110: a 204 carries no content. The handler used to return
     JSONResponse(status_code=204, content=None), which renders the body
-    'null'; under uvicorn that raises a Content-Length protocol error after
-    the response starts, logging a traceback on every successful delete."""
+    'null'; under uvicorn that raised a Content-Length protocol error after
+    the response started, logging a traceback on every successful delete
+    (api-proxy #21)."""
     httpx_mock.add_response(method="DELETE", url=f"{GMAIL}/drafts/d1", status_code=204)
 
     response = client.delete("/gmail/v1/users/me/drafts/d1", headers=auth_headers)
