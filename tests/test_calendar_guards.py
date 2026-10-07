@@ -15,6 +15,7 @@
 """
 
 import inspect
+import logging
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 from urllib.parse import unquote
 
@@ -343,3 +344,22 @@ def test_a_write_to_a_hash_calendar_is_judged_on_the_path_the_router_runs(
     [sent] = httpx_mock.get_requests()
     assert sent.method == "POST"
     assert unquote(sent.url.raw_path.decode()) == f"/calendar/v3/calendars/{HOLIDAY}/events"
+
+
+def test_the_request_log_names_the_calendar_that_was_served(
+    client, auth_headers, api_keys_file, token_file, httpx_mock, caplog
+):
+    """Review item 9 (PR #25): the access log line used request.url.path,
+    which stops at a decoded '#', so it named calendar 'en.usa' for a request
+    served for the holiday calendar. It must log the path the allowlist
+    judged and the router ran."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+    httpx_mock.add_response(json={"items": []})
+
+    with caplog.at_level(logging.INFO, logger="api_proxy.main"):
+        client.get(
+            f"/calendar/v3/calendars/{HOLIDAY.replace('#', '%23')}/events", headers=auth_headers
+        )
+
+    [line] = [r.getMessage() for r in caplog.records if r.name == "api_proxy.main"]
+    assert line.startswith(f"GET /calendar/v3/calendars/{HOLIDAY}/events - 200")

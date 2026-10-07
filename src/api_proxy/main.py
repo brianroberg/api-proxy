@@ -244,7 +244,9 @@ async def log_requests(request: Request, call_next):
     key_name = getattr(request.state, "api_key_name", None)
     key_info = f" (key: {key_name})" if key_name else ""
 
-    logger.info(f"{request.method} {request.url.path} - {response.status_code}{key_info}")
+    # The scope path, as the allowlist judges it (see check_blocked_operations).
+    path = request.scope["path"]
+    logger.info(f"{request.method} {path} - {response.status_code}{key_info}")
 
     return response
 
