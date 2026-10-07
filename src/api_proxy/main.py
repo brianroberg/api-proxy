@@ -198,7 +198,13 @@ app = FastAPI(
 @app.middleware("http")
 async def check_blocked_operations(request: Request, call_next):
     """Middleware to block forbidden operations before authentication."""
-    path = request.url.path
+    # Judge the decoded scope path, which is what the router matches on (the
+    # app is run without a root_path, so the two are the same string).
+    # request.url.path is rebuilt from that path (behind the Host header) and
+    # re-parsed as a URL, so a decoded '#' or '?' (sent as %23 / %3F) cuts it
+    # short and the allowlist would evaluate a different path from the one
+    # that runs.
+    path = request.scope["path"]
     method = request.method
 
     # Skip check for health endpoint

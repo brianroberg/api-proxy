@@ -297,7 +297,6 @@ class TestRsvpMatchesOnlyTheCallersOwnAddress:
         assert build_rsvp_attendees(attendees, "", "accepted") is None
 
 
-@pytest.mark.xfail(strict=True, reason="api-proxy #22: '#' in a calendar id truncates the URL")
 def test_calendar_id_with_hash_reaches_google_intact(
     client, auth_headers, api_keys_file, token_file, httpx_mock
 ):
@@ -317,3 +316,30 @@ def test_calendar_id_with_hash_reaches_google_intact(
         unquote(sent.url.raw_path.decode())
         == "/calendar/v3/calendars/en.usa#holiday@group.v.calendar.google.com/events"
     )
+
+
+HOLIDAY = "en.usa#holiday@group.v.calendar.google.com"
+
+
+def test_a_write_to_a_hash_calendar_is_judged_on_the_path_the_router_runs(
+    client, auth_headers, api_keys_file, token_file, httpx_mock
+):
+    """api-proxy #22: the allowlist middleware read request.url.path, which
+    Starlette rebuilds from the decoded path and so cuts at a literal '#'. It
+    judged POST /calendar/v3/calendars/en.usa (not allowlisted, 403) while the
+    router would run create_event on the whole id. The allowlist must judge
+    the path the router matches, so the write gets the same treatment as a
+    write to any other calendar and reaches Google with the id intact."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+    httpx_mock.add_response(json={"id": "e1", "summary": "Planning"})
+
+    response = client.post(
+        f"/calendar/v3/calendars/{HOLIDAY.replace('#', '%23')}/events",
+        json=EVENT,
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    [sent] = httpx_mock.get_requests()
+    assert sent.method == "POST"
+    assert unquote(sent.url.raw_path.decode()) == f"/calendar/v3/calendars/{HOLIDAY}/events"

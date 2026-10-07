@@ -5,6 +5,7 @@ import logging
 import re
 import string
 from typing import Annotated
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -55,6 +56,21 @@ def validate_calendar_id(calendar_id: str) -> str:
             detail={"error": "proxy_error", "message": "Invalid calendarId format"},
         )
     return calendar_id
+
+
+def calendar_id_segment(calendar_id: str) -> str:
+    """
+    Percent-encode a validated calendar id as one upstream URL path segment.
+
+    ``CALENDAR_ID_PATTERN`` admits '#' (holiday calendars), '%' and '+'.
+    Interpolated raw, a '#' turns the rest of the URL into a fragment, so
+    Google receives a request for a different resource. The id passed here is
+    the decoded path parameter, so it is encoded exactly once. '@' is left
+    as-is, so ids without those three characters are sent byte-for-byte as
+    before. Use this for the upstream path only: the exemption check compares
+    the decoded id.
+    """
+    return quote(calendar_id, safe="@")
 
 
 def validate_event_id(event_id: str) -> str:
@@ -408,7 +424,7 @@ async def list_calendars(
 async def get_calendar(request: Request, calendar_id: str):
     """Get metadata for a specific calendar."""
     calendar_id = validate_calendar_id(calendar_id)
-    path = f"/calendars/{calendar_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}"
 
     await handle_confirmation(request, "GET", path, is_modify=False)
 
@@ -446,7 +462,7 @@ async def list_events(
 ):
     """List events in a calendar."""
     calendar_id = validate_calendar_id(calendar_id)
-    path = f"/calendars/{calendar_id}/events"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events"
 
     await handle_confirmation(request, "GET", path, is_modify=False)
 
@@ -494,7 +510,7 @@ async def get_event(
     """Get a specific event by ID."""
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     await handle_confirmation(request, "GET", path, is_modify=False)
 
@@ -529,7 +545,7 @@ async def create_event(
 ):
     """Create a new event in a calendar."""
     calendar_id = validate_calendar_id(calendar_id)
-    path = f"/calendars/{calendar_id}/events"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events"
 
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
@@ -595,7 +611,7 @@ async def update_event(
     """Update an event (full replacement)."""
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
@@ -655,7 +671,7 @@ async def patch_event(
     """Partially update an event."""
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
@@ -718,7 +734,7 @@ async def delete_event(
     """Delete an event. This operation always requires confirmation."""
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     # Fetch event to get summary and dates for confirmation display
     client = get_calendar_client()
@@ -804,7 +820,7 @@ async def respond_to_event(
     """
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     client = get_calendar_client()
 
