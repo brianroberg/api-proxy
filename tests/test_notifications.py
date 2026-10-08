@@ -498,3 +498,31 @@ class TestResolutionFollowUpOnCancel:
         _, headers, body = ntfy_send.await_args_list[1].args
         assert headers["Title"].startswith("Cancelled:")
         assert "nothing was forwarded" in body
+
+    async def test_an_approval_overtaken_by_a_cancel_pushes_a_correction(
+        self, web_queue, config_web_confirm, ntfy_send
+    ):
+        """Review round 2 item 3 (PR #25): the operator approves and the waiter
+        is cancelled in the same event-loop pass, so nothing is forwarded, yet
+        the phone has already been told "Approved; the request was forwarded".
+        A follow-up must say that nothing was forwarded. (ntfy_send is a fake:
+        a dummy token, and _send replaced by a mock.)"""
+        task = asyncio.create_task(
+            web_queue.add_request(
+                method="DELETE",
+                path="/calendars/primary/events/event1",
+                event_summary="Team Sync",
+            )
+        )
+        await asyncio.sleep(0.05)
+        pending = await web_queue.get_pending()
+        assert await web_queue.approve(pending[0]["id"]) is True
+        task.cancel()  # before the waiter has run again
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.05)
+
+        titles = [call.args[1]["Title"] for call in ntfy_send.await_args_list]
+        assert [t.split(":")[0] for t in titles] == ["Approval needed", "Approved", "Cancelled"]
+        _, _, body = ntfy_send.await_args_list[2].args
+        assert "nothing was forwarded" in body

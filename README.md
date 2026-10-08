@@ -981,7 +981,9 @@ low-priority follow-up is sent so a stale notification isn't acted on. A
 "Cancelled" follow-up is sent if the proxy's own wait for the decision is
 cancelled inside the process before anyone decides, as when a proxy run in
 a terminal is forced to quit with a second Ctrl-C; the push may not get out
-before the process exits.
+before the process exits. If an approval lands at the moment the wait is
+cancelled, the "Approved" follow-up has already gone out but nothing is
+forwarded, so a "Cancelled" follow-up is sent after it to say so.
 
 A container restart does not send it. As `api-proxy` runs uvicorn, the stop
 signal Docker sends (SIGTERM) makes it wait for open requests to finish,

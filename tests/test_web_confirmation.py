@@ -494,12 +494,26 @@ class TestCancelledWaitIsCleanedUp:
         assert resolved == [(request_id, "cancelled")]
         assert await web_queue.approve(request_id) is False
 
-    async def test_a_decision_landing_just_before_the_cancel_is_not_reported_twice(
-        self, web_queue, config_web_confirm, monkeypatch
+    @pytest.mark.parametrize("timeout", [1.0, None], ids=["wait_for", "bare-await"])
+    @pytest.mark.parametrize(
+        "decide,broadcast,pushes",
+        [
+            ("approve", "request_approved", ["approved", "cancelled"]),
+            ("reject", "request_rejected", ["rejected"]),
+        ],
+    )
+    async def test_a_decision_landing_just_before_the_cancel_is_reported_truthfully(
+        self, web_queue, config_web_confirm, monkeypatch, decide, broadcast, pushes, timeout
     ):
-        """If the operator's approval removed the entry before the cancellation
-        reached the waiter, the cancel path has nothing left to clean up: no
-        second broadcast and no "cancelled" push on top of the "approved" one."""
+        """The operator's decision lands on the future and the waiter is then
+        cancelled before it runs again, so the waiter raises CancelledError and
+        nothing is forwarded. The dashboard gets the decision's broadcast only:
+        the card is gone either way. Review round 2 item 3 (PR #25): approve()
+        has already pushed "Approved; the request was forwarded", which is
+        false here, so the phone must also get a "cancelled" push saying
+        nothing was forwarded. A rejection's push is already true and gets no
+        follow-up."""
+        config_web_confirm.confirmation_timeout = timeout
         resolved = []
         monkeypatch.setattr(
             notifications,
@@ -510,13 +524,13 @@ class TestCancelledWaitIsCleanedUp:
         task = asyncio.create_task(web_queue.add_request(method="DELETE", path="/x/events/1"))
         added = await asyncio.wait_for(events.get(), 5)
 
-        assert await web_queue.approve(added["pending"][0]["id"]) is True
+        assert await getattr(web_queue, decide)(added["pending"][0]["id"]) is True
         task.cancel()  # before the waiter has run again
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        assert _drain(events) == [{"event": "request_approved", "pending": []}]
-        assert resolved == ["approved"]
+        assert _drain(events) == [{"event": broadcast, "pending": []}]
+        assert resolved == pushes
 
     @pytest.mark.parametrize("timeout", [1.0, None], ids=["wait_for", "bare-await"])
     @pytest.mark.parametrize("decide", ["approve", "reject"])

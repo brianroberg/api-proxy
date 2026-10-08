@@ -222,9 +222,21 @@ class WebConfirmationQueue:
             # not decide this: Task.cancel() cancels the future at once, and a
             # decision landing before this cleanup runs finds it cancelled,
             # removes the entry and reports nothing, leaving the report to us.
-            if self._recover_operator_decision(future) is None:
+            recovered = self._recover_operator_decision(future)
+            if recovered is None:
                 logger.info(f"Request {request_id} cancelled while awaiting a decision")
                 await self._notify_subscribers("request_cancelled", pending_snapshot)
+                notifications.notify_request_resolved(pending, "cancelled")
+            elif recovered is ConfirmationOutcome.APPROVED:
+                # The approval landed in the same event-loop pass as the
+                # cancellation, so approve() has pushed "Approved; the request
+                # was forwarded" and this raise means it will not be. Correct
+                # the phone. The dashboard card is already gone, so there is
+                # no second broadcast. A rejection's push is already true.
+                logger.info(
+                    f"Request {request_id} was approved as its wait was cancelled; "
+                    "nothing was forwarded"
+                )
                 notifications.notify_request_resolved(pending, "cancelled")
             raise
 

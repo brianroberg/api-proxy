@@ -289,6 +289,7 @@ def notify_request_resolved(pending: PendingRequest, outcome: str) -> None:
 
     ``outcome`` is a ConfirmationOutcome value string
     ("approved" / "rejected" / "expired"), or "cancelled" when the waiting
-    request was cancelled before anyone decided.
+    request was cancelled before anyone decided, or as an approval landed
+    (then it corrects the "approved" push: nothing was forwarded).
     """
     _dispatch(build_resolution_notification, pending, outcome)
