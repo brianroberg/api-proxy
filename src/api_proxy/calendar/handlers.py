@@ -5,10 +5,11 @@ import logging
 import re
 import string
 from typing import Annotated
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from api_proxy.auth import verify_api_key
 from api_proxy.calendar.client import get_calendar_client
@@ -20,6 +21,7 @@ from api_proxy.confirmation import (
     get_confirmation_handler,
     requires_confirmation,
 )
+from api_proxy.upstream import backend_failure_detail, lookup_failure_detail
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +34,11 @@ router = APIRouter(
 
 # Regex for validating calendarId - "primary" or email-like strings
 # Note: Pattern includes # for holiday calendars like "en.usa#holiday@group.v.calendar.google.com"
-CALENDAR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+#-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$|^primary$")
+# \Z (not $) so a trailing newline can't sneak past the pattern
+CALENDAR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+#-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\Z|^primary\Z")
 
 # Regex for validating eventId - alphanumeric with some special chars
-EVENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+EVENT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+\Z")
 
 
 def validate_calendar_id(calendar_id: str) -> str:
@@ -57,6 +60,21 @@ def validate_calendar_id(calendar_id: str) -> str:
     return calendar_id
 
 
+def calendar_id_segment(calendar_id: str) -> str:
+    """
+    Percent-encode a validated calendar id as one upstream URL path segment.
+
+    ``CALENDAR_ID_PATTERN`` admits '#' (holiday calendars), '%' and '+'.
+    Interpolated raw, a '#' turns the rest of the URL into a fragment, so
+    Google receives a request for a different resource. The id passed here is
+    the decoded path parameter, so it is encoded exactly once. '@' is left
+    as-is, so ids without those three characters are sent byte-for-byte as
+    before. Use this for the upstream path only: the exemption check compares
+    the decoded id.
+    """
+    return quote(calendar_id, safe="@")
+
+
 def validate_event_id(event_id: str) -> str:
     """
     Basic validation of eventId.
@@ -75,13 +93,15 @@ def validate_event_id(event_id: str) -> str:
     return event_id
 
 
-async def forward_response(response) -> JSONResponse:
+async def forward_response(response) -> Response:
     """Forward a Calendar API response to the caller."""
     try:
-        # Handle 204 No Content responses (returned by DELETE operations)
-        # These have no body, so we can't call response.json()
+        # Handle 204 No Content responses (returned by DELETE operations).
+        # These have no body, so we can't call response.json(), and the reply
+        # must carry none either: JSONResponse(content=None) would render
+        # "null", which uvicorn rejects as longer than the Content-Length.
         if response.status_code == 204:
-            return JSONResponse(status_code=204, content=None)
+            return Response(status_code=204)
 
         content = response.json()
         # Check if this is a Calendar API error
@@ -119,15 +139,16 @@ async def _get_event_or_404(client, path: str) -> httpx.Response:
 
     Maps the failures every write path handles identically: a missing event
     raises a tagged 404 and a backend communication failure raises a tagged
-    502. Any other response is returned for the caller to handle.
+    502 saying the write was not sent. Any other response is returned for the
+    caller to handle.
     """
     try:
         response = await client.request("GET", path)
-    except (RuntimeError, httpx.HTTPError) as e:
+    except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=lookup_failure_detail(e),
         ) from e
     if response.status_code == 404:
         raise HTTPException(
@@ -151,11 +172,11 @@ async def _resolve_authenticated_user_email(client) -> str:
     """
     try:
         response = await client.request("GET", "/calendars/primary")
-    except (RuntimeError, httpx.HTTPError) as e:
+    except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=lookup_failure_detail(e),
         ) from e
 
     email = None
@@ -398,7 +419,7 @@ async def list_calendars(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -406,7 +427,7 @@ async def list_calendars(
 async def get_calendar(request: Request, calendar_id: str):
     """Get metadata for a specific calendar."""
     calendar_id = validate_calendar_id(calendar_id)
-    path = f"/calendars/{calendar_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}"
 
     await handle_confirmation(request, "GET", path, is_modify=False)
 
@@ -418,7 +439,7 @@ async def get_calendar(request: Request, calendar_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -444,7 +465,7 @@ async def list_events(
 ):
     """List events in a calendar."""
     calendar_id = validate_calendar_id(calendar_id)
-    path = f"/calendars/{calendar_id}/events"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events"
 
     await handle_confirmation(request, "GET", path, is_modify=False)
 
@@ -478,7 +499,7 @@ async def list_events(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -492,7 +513,7 @@ async def get_event(
     """Get a specific event by ID."""
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     await handle_confirmation(request, "GET", path, is_modify=False)
 
@@ -508,7 +529,7 @@ async def get_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -527,7 +548,7 @@ async def create_event(
 ):
     """Create a new event in a calendar."""
     calendar_id = validate_calendar_id(calendar_id)
-    path = f"/calendars/{calendar_id}/events"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events"
 
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
@@ -572,7 +593,7 @@ async def create_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -593,7 +614,7 @@ async def update_event(
     """Update an event (full replacement)."""
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
@@ -637,7 +658,7 @@ async def update_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -653,7 +674,7 @@ async def patch_event(
     """Partially update an event."""
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     # Block events with attendees (security: prevents sending invitations)
     _reject_if_has_attendees(body)
@@ -697,7 +718,7 @@ async def patch_event(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -716,7 +737,7 @@ async def delete_event(
     """Delete an event. This operation always requires confirmation."""
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     # Fetch event to get summary and dates for confirmation display
     client = get_calendar_client()
@@ -754,11 +775,11 @@ async def delete_event(
     try:
         response = await client.request("DELETE", path, params=params or None)
         return await forward_response(response)
-    except (RuntimeError, httpx.HTTPError) as e:
+    except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -802,7 +823,7 @@ async def respond_to_event(
     """
     calendar_id = validate_calendar_id(calendar_id)
     event_id = validate_event_id(event_id)
-    path = f"/calendars/{calendar_id}/events/{event_id}"
+    path = f"/calendars/{calendar_id_segment(calendar_id)}/events/{event_id}"
 
     client = get_calendar_client()
 
@@ -853,9 +874,9 @@ async def respond_to_event(
             json_body={"attendees": patched_attendees, "attendeesOmitted": True},
         )
         return await forward_response(patch_response)
-    except (RuntimeError, httpx.HTTPError) as e:
+    except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e

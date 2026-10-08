@@ -1,9 +1,14 @@
 """Tests for API key authentication."""
 
+import asyncio
 import json
 import logging
+import time
+
+import httpx
 
 from api_proxy.auth import APIKeyManager
+from api_proxy.main import app
 
 
 class TestValidAuthentication:
@@ -251,3 +256,52 @@ def test_rejected_key_log_carries_only_a_short_prefix(client, caplog):
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert key[:10] in logged
     assert key[:11] not in logged  # no more than the documented 10 characters
+
+
+def test_a_lock_file_that_cannot_be_taken_does_not_fail_the_request(
+    client, auth_headers, api_keys_file, httpx_mock, caplog, break_keys_lock
+):
+    """Review item 3 (PR #25): if the keys-file lock cannot be opened or
+    taken (wrong owner or mode, or no flock support), every authenticated
+    request answered a plain-text 500. The request is already authenticated
+    and only last_used_at is at stake, so it skips that with a warning, as it
+    does when the lock is busy."""
+    httpx_mock.add_response(
+        url="https://gmail.googleapis.com/gmail/v1/users/me/labels", json={"labels": []}
+    )
+    break_keys_lock(api_keys_file)
+    before = api_keys_file.read_bytes()
+
+    with caplog.at_level(logging.WARNING, logger="api_proxy.auth"):
+        response = client.get("/gmail/v1/users/me/labels", headers=auth_headers)
+
+    assert response.status_code == 200, response.text
+    assert api_keys_file.read_bytes() == before
+    assert any("last_used_at" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_held_keys_lock_does_not_stall_other_requests(
+    test_config, api_keys_file, auth_headers, lock_holder
+):
+    """Review item 11 (PR #25): update_last_used waits up to a second for a
+    busy keys-file lock. It ran on the event loop, so that wait froze every
+    other request, the approval dashboard included. While one request waits,
+    another must still be served."""
+    lock_holder(api_keys_file, 30)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://proxy") as proxy:
+        started = time.monotonic()
+        # Authenticated, then refused for its id: it never reaches Google.
+        waiting = asyncio.create_task(
+            proxy.get("/gmail/v1/users/me/messages/bad.id", headers=auth_headers)
+        )
+        await asyncio.sleep(0.05)
+        health = await proxy.get("/health")
+        health_done = time.monotonic() - started
+        response = await waiting
+        waiting_done = time.monotonic() - started
+
+    assert health.status_code == 200
+    assert response.status_code == 400, response.text
+    assert waiting_done >= 0.8  # it did wait on the lock
+    assert health_done < 0.5  # and /health was served meanwhile

@@ -133,6 +133,13 @@ uv run api-proxy-keys revoke --name "email-agent-prod"
 uv run api-proxy-keys show --name "email-agent-prod"
 ```
 
+The CLI exits `0` on success and `1` when the named key does not exist or
+`create` rejects the name. It exits `3`, with one `Error:` line, when a
+command that changes keys could not take the keys-file lock (another
+writer kept it, or the lock file cannot be opened or locked) or could not
+read an existing keys file (see Key Storage). Nothing was written, so the
+command can be run again once the cause is dealt with.
+
 ### Key Storage
 
 API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
@@ -149,6 +156,26 @@ API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
   }
 }
 ```
+
+Writers take an exclusive lock on a sibling file (the keys file's name plus
+`.lock`, e.g. `api_keys.json.lock`) for each load-modify-save: the CLI
+commands that change keys, and the server when it records `last_used_at`.
+So a `revoke` or `disable` made while a request from that key is in flight
+is not undone when that request saves its timestamp; the in-flight request
+itself still completes, and later ones are refused. On a local filesystem
+the lock is released when its holder exits, including a crash, so the
+`.lock` file left behind is empty and harmless. If the lock stays busy, the
+server skips the `last_used_at` update (with a warning) after about a
+second, and the CLI gives up with an error after about ten. If the lock file
+cannot be opened or locked at all (wrong owner or mode, or a filesystem
+without `flock` support), the server skips the update with a warning and the
+CLI exits with an error without writing.
+
+A command that changes keys treats a missing keys file as empty, but
+refuses to write over one that exists and cannot be read or parsed: it exits
+with an error and leaves the file as it is, rather than replace every key
+in it with only its own change. The server's `last_used_at` update likewise
+skips such a file with a warning.
 
 ### Authentication Errors
 
@@ -171,7 +198,8 @@ API keys are stored in `api_keys.json` (configurable via `--api-keys-file`):
 | 403 | `forbidden` | Confirmation rejected by operator |
 | 403 | `confirmation_expired` | Confirmation request expired before an operator responded |
 | 422 | `proxy_error` | Request validation failed (malformed JSON, missing fields) |
-| 502 | `backend_error` | Backend unreachable or authentication failed |
+| 502 | `backend_error` | Backend authentication failed, or Google could not be reached and the request was not sent (the message names the host). Also returned when Google cannot be reached for a lookup the proxy makes before a write (a calendar delete or RSVP, or a Gmail change that needs approval): the write was not sent, and no approval was requested |
+| 502 | `backend_outcome_unknown` | No complete answer from Google after the request may have reached it (read timeout, dropped connection, a response body that cannot be decoded), so a write may or may not have been applied: re-read before retrying a write. This value is additive: the status is the same 502, so a caller that checks only the status is unaffected |
 | 4xx/5xx | `backend_error` | Error passed through from Gmail API |
 
 ### Error Response Format
@@ -949,7 +977,20 @@ Each queued request sends one high-priority notification containing:
   `http://HOST:PORT`.
 
 When the request is resolved — approved, rejected, or expired — a short
-low-priority follow-up is sent so a stale notification isn't acted on.
+low-priority follow-up is sent so a stale notification isn't acted on. A
+"Cancelled" follow-up is sent if the proxy's own wait for the decision is
+cancelled inside the process before anyone decides, as when a proxy run in
+a terminal is forced to quit with a second Ctrl-C; the push may not get out
+before the process exits. If an approval lands at the moment the wait is
+cancelled, the "Approved" follow-up has already gone out but nothing is
+forwarded, so a "Cancelled" follow-up is sent after it to say so.
+
+A container restart does not send it. As `api-proxy` runs uvicorn, the stop
+signal Docker sends (SIGTERM) makes it wait for open requests to finish,
+including one waiting for approval, and Docker kills it when its stop
+timeout runs out (10 s by default). So approvals pending at a restart are
+dropped without a "Cancelled" push, and their "Approval needed" push stays
+on the phone.
 
 Notifications are strictly best-effort: sends are fire-and-forget with a
 short timeout, and an ntfy outage can never fail, block, or delay the
@@ -1037,6 +1078,7 @@ Server-Sent Events stream for real-time queue updates.
 - `request_approved` - Request was approved
 - `request_rejected` - Request was rejected
 - `request_timeout` - Request timed out
+- `request_cancelled` - The proxy's wait for a decision was cancelled inside the process before anyone decided; nothing was forwarded. A container restart does not send it (see Approval Notifications)
 
 **Example:**
 ```bash

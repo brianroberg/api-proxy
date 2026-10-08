@@ -46,6 +46,7 @@ htmlcov/
 # Sensitive files - NEVER commit these
 token.json
 api_keys.json
+api_keys.json.lock
 credentials.json
 *.pem
 *.key

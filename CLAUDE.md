@@ -35,6 +35,7 @@ Operations are blocked by default. Only explicitly allowed endpoints work. This 
 Errors clearly indicate origin:
 - `proxy_error`: Problems in the proxy itself
 - `backend_error`: Errors from Gmail API
+- `backend_outcome_unknown`: A 502 where the request may have reached Google, so its outcome is unknown
 - `auth_error`: Authentication failures
 - `forbidden`: Blocked operations
 

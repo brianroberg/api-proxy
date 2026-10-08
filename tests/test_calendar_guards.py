@@ -15,6 +15,7 @@
 """
 
 import inspect
+import logging
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 from urllib.parse import unquote
 
@@ -217,9 +218,6 @@ def test_delete_forwards_send_updates_and_passes_the_204_through(
     }
 
 
-@pytest.mark.xfail(
-    strict=True, reason="api-proxy #21: calendar delete also answers 204 with a 'null' body"
-)
 def test_delete_answers_204_with_no_body(client, auth_headers, api_keys_file, token_file, backend):
     _config(api_keys_file, token_file, ConfirmationMode.NONE)
     mock_client, _ = backend
@@ -300,7 +298,6 @@ class TestRsvpMatchesOnlyTheCallersOwnAddress:
         assert build_rsvp_attendees(attendees, "", "accepted") is None
 
 
-@pytest.mark.xfail(strict=True, reason="api-proxy #22: '#' in a calendar id truncates the URL")
 def test_calendar_id_with_hash_reaches_google_intact(
     client, auth_headers, api_keys_file, token_file, httpx_mock
 ):
@@ -320,3 +317,138 @@ def test_calendar_id_with_hash_reaches_google_intact(
         unquote(sent.url.raw_path.decode())
         == "/calendar/v3/calendars/en.usa#holiday@group.v.calendar.google.com/events"
     )
+
+
+HOLIDAY = "en.usa#holiday@group.v.calendar.google.com"
+
+
+def test_a_write_to_a_hash_calendar_is_judged_on_the_path_the_router_runs(
+    client, auth_headers, api_keys_file, token_file, httpx_mock
+):
+    """api-proxy #22: the allowlist middleware read request.url.path, which
+    Starlette rebuilds from the decoded path and so cuts at a literal '#'. It
+    judged POST /calendar/v3/calendars/en.usa (not allowlisted, 403) while the
+    router would run create_event on the whole id. The allowlist must judge
+    the path the router matches, so the write gets the same treatment as a
+    write to any other calendar and reaches Google with the id intact."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+    httpx_mock.add_response(json={"id": "e1", "summary": "Planning"})
+
+    response = client.post(
+        f"/calendar/v3/calendars/{HOLIDAY.replace('#', '%23')}/events",
+        json=EVENT,
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    [sent] = httpx_mock.get_requests()
+    assert sent.method == "POST"
+    assert unquote(sent.url.raw_path.decode()) == f"/calendar/v3/calendars/{HOLIDAY}/events"
+
+
+ATTENDED_EVENT = dict(EVENT, id="e1", attendees=[{"email": "me@example.com"}])
+
+
+@pytest.mark.parametrize(
+    "method,suffix,body,upstream",
+    [
+        pytest.param("GET", "", None, [("GET", "")], id="get_calendar"),
+        pytest.param("GET", "/events", None, [("GET", "/events")], id="list_events"),
+        pytest.param("GET", "/events/e1", None, [("GET", "/events/e1")], id="get_event"),
+        pytest.param("POST", "/events", EVENT, [("POST", "/events")], id="create_event"),
+        pytest.param("PUT", "/events/e1", EVENT, [("PUT", "/events/e1")], id="update_event"),
+        pytest.param(
+            "PATCH", "/events/e1", {"summary": "Moved"}, [("PATCH", "/events/e1")], id="patch_event"
+        ),
+        pytest.param(
+            "DELETE",
+            "/events/e1",
+            None,
+            [("GET", "/events/e1"), ("DELETE", "/events/e1")],
+            id="delete_event",
+        ),
+        pytest.param(
+            "POST",
+            "/events/e1/respond",
+            {"responseStatus": "accepted"},
+            [("GET", "/events/e1"), ("PATCH", "/events/e1")],
+            id="respond_to_event",
+        ),
+    ],
+)
+def test_every_calendar_handler_sends_a_hash_calendar_id_intact(
+    client, auth_headers, api_keys_file, token_file, httpx_mock, method, suffix, body, upstream
+):
+    """Review item 12 (PR #25): each of the eight calendar handlers builds its
+    own upstream path, and only list and create were pinned. Dropping
+    calendar_id_segment() from any other one passed the suite, and for a
+    delete it would send DELETE /calendars/en.usa, a calendar delete on the
+    truncated id."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+
+    def answer(request):
+        if request.url.path == "/calendar/v3/calendars/primary":  # RSVP's own-address lookup
+            return httpx.Response(200, json={"id": "me@example.com"})
+        return httpx.Response(200, json=ATTENDED_EVENT)
+
+    httpx_mock.add_callback(answer, is_reusable=True)
+
+    response = client.request(
+        method,
+        f"/calendar/v3/calendars/{HOLIDAY.replace('#', '%23')}{suffix}",
+        json=body,
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    sent = [
+        (r.method, unquote(r.url.raw_path.decode().partition("?")[0]))
+        for r in httpx_mock.get_requests()
+        if r.url.path != "/calendar/v3/calendars/primary"
+    ]
+    assert sent == [(m, f"/calendar/v3/calendars/{HOLIDAY}{tail}") for m, tail in upstream]
+
+
+def test_the_request_log_names_the_calendar_that_was_served(
+    client, auth_headers, api_keys_file, token_file, httpx_mock, caplog
+):
+    """Review item 9 (PR #25): the access log line used request.url.path,
+    which stops at a decoded '#', so it named calendar 'en.usa' for a request
+    served for the holiday calendar. It must log the path the allowlist
+    judged and the router ran."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+    httpx_mock.add_response(json={"items": []})
+
+    with caplog.at_level(logging.INFO, logger="api_proxy.main"):
+        client.get(
+            f"/calendar/v3/calendars/{HOLIDAY.replace('#', '%23')}/events", headers=auth_headers
+        )
+
+    [line] = [r.getMessage() for r in caplog.records if r.name == "api_proxy.main"]
+    assert line.startswith(f"GET /calendar/v3/calendars/{HOLIDAY}/events - 200")
+
+
+@pytest.mark.parametrize(
+    "method,path,message",
+    [
+        ("GET", "/calendar/v3/calendars/primary/events/abc%0A", "Invalid eventId format"),
+        ("DELETE", "/calendar/v3/calendars/primary/events/abc%0A", "Invalid eventId format"),
+        ("GET", "/calendar/v3/calendars/a@x.com%0A/events", "Invalid calendarId format"),
+        ("GET", "/calendar/v3/calendars/primary%0A/events", "Invalid calendarId format"),
+    ],
+)
+def test_an_id_with_a_trailing_newline_is_rejected_like_any_bad_id(
+    client, auth_headers, api_keys_file, token_file, httpx_mock, method, path, message
+):
+    """Review item 10 (PR #25): the calendar and event id patterns ended in
+    '$', which also matches before a trailing newline. An id ending
+    in %0A passed, and httpx then refused the URL with a 500 (or, for a
+    calendar id, it was sent to Google encoded). It must get the same 400
+    as any other malformed id, before anything is sent."""
+    _config(api_keys_file, token_file, ConfirmationMode.NONE)
+
+    response = client.request(method, path, headers=auth_headers)
+
+    assert response.status_code == 400, response.text
+    assert response.json() == {"error": "proxy_error", "message": message}
+    assert httpx_mock.get_requests() == []

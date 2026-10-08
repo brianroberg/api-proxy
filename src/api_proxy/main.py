@@ -195,10 +195,30 @@ app = FastAPI(
 # =============================================================================
 
 
+def _loggable(path: str) -> str:
+    """
+    The decoded request path, escaped for a log line.
+
+    The scope path is percent-decoded, so a request for ``/x%0D%0Ay`` carries
+    a real CR LF; logged as-is it would end the line and let the request
+    write a forged one after it. ``unicode_escape`` writes control and
+    non-ASCII characters (and backslashes) as escape sequences and leaves
+    printable ASCII, '#' included, as it is. Judge the unescaped path; escape
+    only what is logged.
+    """
+    return path.encode("unicode_escape").decode("ascii")
+
+
 @app.middleware("http")
 async def check_blocked_operations(request: Request, call_next):
     """Middleware to block forbidden operations before authentication."""
-    path = request.url.path
+    # Judge the decoded scope path, which is what the router matches on (the
+    # app is run without a root_path, so the two are the same string).
+    # request.url.path is rebuilt from that path (behind the Host header) and
+    # re-parsed as a URL, so a decoded '#' or '?' (sent as %23 / %3F) cuts it
+    # short and the allowlist would evaluate a different path from the one
+    # that runs.
+    path = request.scope["path"]
     method = request.method
 
     # Skip check for health endpoint
@@ -207,7 +227,7 @@ async def check_blocked_operations(request: Request, call_next):
 
     # First check if explicitly blocked (fail fast)
     if is_blocked_path(path):
-        logger.warning(f"Blocked operation attempted: {method} {path}")
+        logger.warning(f"Blocked operation attempted: {method} {_loggable(path)}")
         return JSONResponse(
             status_code=403,
             content=ErrorResponse.forbidden_error("This operation is not allowed").model_dump(),
@@ -215,7 +235,7 @@ async def check_blocked_operations(request: Request, call_next):
 
     # Then check if allowed (allowlist approach)
     if not is_allowed_path(path, method):
-        logger.warning(f"Unknown endpoint accessed: {method} {path}")
+        logger.warning(f"Unknown endpoint accessed: {method} {_loggable(path)}")
         return JSONResponse(
             status_code=403,
             content=ErrorResponse.forbidden_error("This operation is not allowed").model_dump(),
@@ -238,7 +258,10 @@ async def log_requests(request: Request, call_next):
     key_name = getattr(request.state, "api_key_name", None)
     key_info = f" (key: {key_name})" if key_name else ""
 
-    logger.info(f"{request.method} {request.url.path} - {response.status_code}{key_info}")
+    # The scope path, as the allowlist judges it (see check_blocked_operations),
+    # escaped for the log line by _loggable.
+    path = request.scope["path"]
+    logger.info(f"{request.method} {_loggable(path)} - {response.status_code}{key_info}")
 
     return response
 

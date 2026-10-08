@@ -1,6 +1,10 @@
 """Pytest fixtures for API proxy tests."""
 
+import errno
 import json
+import os
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -61,6 +65,73 @@ def temp_dir():
     """Create a temporary directory for test files."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir)
+
+
+# Holds the keys-file lock from a separate process, as the api-proxy-keys CLI
+# does against the server. Prints "held" once it has the lock.
+_HOLD_LOCK = """
+import sys, time
+from pathlib import Path
+from api_proxy.auth import APIKeyManager
+with APIKeyManager(Path(sys.argv[1]))._locked():
+    print("held", flush=True)
+    time.sleep(float(sys.argv[2]))
+"""
+
+
+@pytest.fixture
+def lock_holder():
+    """Start a separate process holding the keys-file lock for `seconds`."""
+    procs = []
+
+    def start(keys_file, seconds):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _HOLD_LOCK, str(keys_file), str(seconds)],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        procs.append(proc)
+        assert proc.stdout.readline().strip() == "held"
+        return proc
+
+    yield start
+    for proc in procs:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
+@pytest.fixture(
+    params=[
+        "directory",
+        pytest.param(
+            "read-only",
+            marks=pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes"),
+        ),
+        "flock-unsupported",
+    ]
+)
+def break_keys_lock(request, monkeypatch):
+    """Make the keys-file lock impossible to take, three ways: the lock path
+    is a directory, the lock file is not writable by this user, or flock()
+    itself fails as it does on a filesystem without lock support."""
+
+    def _break(keys_file):
+        lock_file = keys_file.with_name(keys_file.name + ".lock")
+        if request.param == "directory":
+            lock_file.unlink(missing_ok=True)
+            lock_file.mkdir()
+        elif request.param == "read-only":
+            lock_file.touch()
+            lock_file.chmod(0o400)
+        else:
+
+            def no_locks(fd, operation):
+                raise OSError(errno.ENOLCK, "No locks available")
+
+            monkeypatch.setattr("api_proxy.auth.fcntl.flock", no_locks)
+
+    return _break
 
 
 @pytest.fixture

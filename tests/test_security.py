@@ -1,5 +1,6 @@
 """Security tests - verify blocked operations are actually blocked."""
 
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -408,4 +409,47 @@ class TestUnlistedMethodsAreRejected:
         assert response.status_code == 403
         if method != "HEAD":  # a HEAD response carries no body
             assert response.json()["error"] == "forbidden"
+        assert httpx_mock.get_requests() == []
+
+
+class TestRequestPathsCannotForgeLogLines:
+    """Review round 2 item 1 (PR #25): the middleware logs the decoded scope
+    path, in which %0D%0A is a real CR LF. Logged as-is, an unauthenticated
+    request could start a new, forged line in the proxy's log. The path is
+    still judged decoded, but it is escaped wherever it is logged."""
+
+    @pytest.mark.parametrize(
+        "method,path,status,lines",
+        [
+            pytest.param(
+                "POST",
+                "/gmail/v1/users/x%0D%0AFORGED/messages/send",
+                403,
+                2,
+                id="blocked-warning-and-access-log",
+            ),
+            pytest.param(
+                "GET", "/nothing-here%0D%0AFORGED", 403, 2, id="unknown-warning-and-access-log"
+            ),
+            pytest.param(
+                "GET",
+                "/calendar/v3/calendars/x%0D%0AFORGED/events",
+                401,
+                1,
+                id="allowed-path-access-log",
+            ),
+        ],
+    )
+    def test_a_crlf_in_the_path_stays_on_one_log_line(
+        self, client, httpx_mock, caplog, method, path, status, lines
+    ):
+        with caplog.at_level(logging.INFO, logger="api_proxy.main"):
+            response = client.request(method, path)  # no API key
+
+        assert response.status_code == status
+        logged = [r.getMessage() for r in caplog.records if r.name == "api_proxy.main"]
+        assert len(logged) == lines
+        for line in logged:
+            assert "\r" not in line and "\n" not in line, repr(line)
+            assert "\\r\\nFORGED" in line  # escaped, not dropped
         assert httpx_mock.get_requests() == []

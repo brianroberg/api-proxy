@@ -1,11 +1,14 @@
 """Tests for APIKeyManager (the CLI itself is tested in test_keys_cli.py)."""
 
 import json
+import logging
 import threading
+import time
 
 import pytest
 
-from api_proxy.auth import API_KEY_PREFIX, APIKeyManager
+from api_proxy import auth
+from api_proxy.auth import API_KEY_PREFIX, APIKeyManager, KeysFileError, KeysFileLockTimeout
 
 
 class TestCreateCommand:
@@ -259,6 +262,31 @@ class TestFileHandling:
         # Should return empty list, not crash
         assert keys == []
 
+    def test_a_request_does_not_rewrite_a_corrupt_keys_file(self, temp_dir, caplog):
+        """Review item 4 (PR #25): update_last_used skips, with a warning,
+        rather than write over a keys file it cannot parse."""
+        keys_file = temp_dir / "keys.json"
+        manager = APIKeyManager(keys_file)
+        key = manager.create_key("agent")
+        keys_file.write_text("not valid json{{{")
+
+        with caplog.at_level(logging.WARNING, logger="api_proxy.auth"):
+            manager.update_last_used(key)
+
+        assert keys_file.read_text() == "not valid json{{{"
+        assert any("Skipped the last_used_at update" in r.getMessage() for r in caplog.records)
+
+    def test_create_refuses_to_replace_a_corrupt_keys_file(self, temp_dir):
+        keys_file = temp_dir / "keys.json"
+        manager = APIKeyManager(keys_file)
+        manager.create_key("agent-1")
+        keys_file.write_text("not valid json{{{")
+
+        with pytest.raises(KeysFileError, match="keys file"):
+            manager.create_key("agent-2")
+
+        assert keys_file.read_text() == "not valid json{{{"
+
     def test_preserves_existing_keys_when_adding_new(self, temp_dir):
         """Adding a new key should preserve existing keys."""
         keys_file = temp_dir / "keys.json"
@@ -286,8 +314,8 @@ class TestRevocationIsDurable:
         original_load = APIKeyManager._load_keys
         state = {"fired": False}
 
-        def load_then_operator_acts(self):
-            data = original_load(self)
+        def load_then_operator_acts(self, *args, **kwargs):
+            data = original_load(self, *args, **kwargs)
             if not state["fired"]:
                 state["fired"] = True
                 monkeypatch.setattr(APIKeyManager, "_load_keys", original_load)
@@ -309,18 +337,91 @@ class TestRevocationIsDurable:
         assert not state["operator"].is_alive()
         return key
 
-    @pytest.mark.xfail(
-        strict=True, reason="api-proxy #19: a request's update_last_used can undo a revoke"
-    )
     def test_revoke_during_a_request_stays_revoked(self, temp_dir, monkeypatch):
         keys_file = temp_dir / "keys.json"
         key = self._interleave(keys_file, monkeypatch, lambda m: m.revoke_key("agent"))
         assert APIKeyManager(keys_file).validate_key(key) is None
 
-    @pytest.mark.xfail(
-        strict=True, reason="api-proxy #19: a request's update_last_used can undo a disable"
-    )
     def test_disable_during_a_request_stays_disabled(self, temp_dir, monkeypatch):
         keys_file = temp_dir / "keys.json"
         key = self._interleave(keys_file, monkeypatch, lambda m: m.set_enabled("agent", False))
         assert APIKeyManager(keys_file).validate_key(key)["enabled"] is False
+
+    def test_a_key_created_during_a_request_is_kept(self, temp_dir, monkeypatch):
+        """Review item 12 (PR #25): create_key takes the lock too. Without it,
+        a key created inside a request's load-to-save window is saved over by
+        that request: the CLI prints the new key, and the key then fails."""
+        keys_file = temp_dir / "keys.json"
+        created = []
+        self._interleave(keys_file, monkeypatch, lambda m: created.append(m.create_key("new")))
+        [new_key] = created
+        assert APIKeyManager(keys_file).validate_key(new_key) is not None
+
+
+class TestKeysFileLockAcrossProcesses:
+    """api-proxy #19: the CLI and the server are separate processes, so the
+    lock that keeps one writer from undoing another must hold across them,
+    must not outlive a holder that dies, and must not stall the server."""
+
+    def test_a_write_waits_for_a_lock_held_by_another_process(self, temp_dir, lock_holder):
+        keys_file = temp_dir / "keys.json"
+        manager = APIKeyManager(keys_file)
+        manager.create_key("agent")
+        holder = lock_holder(keys_file, 1.0)
+
+        started = time.monotonic()
+        assert manager.revoke_key("agent") is True
+        waited = time.monotonic() - started
+
+        assert waited >= 0.5  # it waited for the other process to let go
+        holder.wait(timeout=5)
+        assert manager.get_key_by_name("agent") is None
+
+    def test_a_killed_lock_holder_leaves_no_stale_lock(self, temp_dir, lock_holder, monkeypatch):
+        monkeypatch.setattr(auth, "KEYS_LOCK_TIMEOUT_SECONDS", 3.0)
+        keys_file = temp_dir / "keys.json"
+        manager = APIKeyManager(keys_file)
+        manager.create_key("agent")
+        holder = lock_holder(keys_file, 60)
+
+        holder.kill()
+        holder.wait(timeout=5)
+        started = time.monotonic()
+        assert manager.revoke_key("agent") is True
+
+        assert time.monotonic() - started < 1.0
+
+    def test_a_cli_write_gives_up_with_an_error_when_the_lock_stays_held(
+        self, temp_dir, lock_holder, monkeypatch
+    ):
+        monkeypatch.setattr(auth, "KEYS_LOCK_TIMEOUT_SECONDS", 0.2)
+        keys_file = temp_dir / "keys.json"
+        manager = APIKeyManager(keys_file)
+        manager.create_key("agent")
+        lock_holder(keys_file, 30)
+
+        with pytest.raises(KeysFileLockTimeout, match="lock"):
+            manager.revoke_key("agent")
+
+        assert manager.get_key_by_name("agent") is not None  # nothing was written
+
+    def test_a_request_skips_last_used_rather_than_wait_on_a_held_lock(
+        self, temp_dir, lock_holder, monkeypatch, caplog
+    ):
+        """Every authenticated request waits for update_last_used, so a long
+        wait there holds each request up. It is bookkeeping for an
+        already-authenticated request, so it gives up after a short wait and
+        logs a warning."""
+        monkeypatch.setattr(auth, "LAST_USED_LOCK_TIMEOUT_SECONDS", 0.2)
+        keys_file = temp_dir / "keys.json"
+        manager = APIKeyManager(keys_file)
+        key = manager.create_key("agent")
+        lock_holder(keys_file, 30)
+
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger="api_proxy.auth"):
+            manager.update_last_used(key)
+
+        assert time.monotonic() - started < 2.0
+        assert manager.validate_key(key)["last_used_at"] is None
+        assert any("last_used_at" in r.getMessage() for r in caplog.records)
