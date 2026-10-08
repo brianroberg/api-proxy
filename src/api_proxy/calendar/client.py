@@ -150,8 +150,9 @@ class CalendarClient:
 
         Raises:
             RuntimeError: If credentials are not available
-            UpstreamUnavailableError: If the request failed in transport
-                (a RuntimeError, so handlers answer 502)
+            UpstreamUnavailableError: If the request failed in transport or
+                its response body could not be decoded (a RuntimeError, so
+                handlers answer 502)
         """
         creds = self._get_credentials()
         if creds is None:

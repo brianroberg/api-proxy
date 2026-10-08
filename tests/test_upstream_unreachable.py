@@ -53,6 +53,9 @@ NOT_SENT = [
     pytest.param(httpx.ConnectError("All connection attempts failed"), id="ConnectError"),
     pytest.param(httpx.ConnectTimeout("timed out"), id="ConnectTimeout"),
     pytest.param(httpx.PoolTimeout("no free connection"), id="PoolTimeout"),
+    # Raised while opening a tunnel through a forward proxy (the CONNECT was
+    # refused) or during a SOCKS handshake, before Google is contacted.
+    pytest.param(httpx.ProxyError("407 Proxy Authentication Required"), id="ProxyError"),
 ]
 # The request may have reached Google, so its outcome is unknown.
 MAYBE_SENT = [
@@ -61,6 +64,11 @@ MAYBE_SENT = [
     pytest.param(
         httpx.RemoteProtocolError("Server disconnected without sending a response."),
         id="RemoteProtocolError",
+    ),
+    # Raised while decoding the body of a response Google already sent.
+    pytest.param(
+        httpx.DecodingError("Error -3 while decompressing data: incorrect header check"),
+        id="DecodingError",
     ),
 ]
 
@@ -292,3 +300,97 @@ async def test_a_transport_failure_on_the_retry_after_a_401_is_an_upstream_failu
         "Bearer mock_access_token",
         "Bearer fresh-token",
     ]
+
+
+# A body that claims gzip and is not: httpx raises DecodingError while reading
+# it, after Google has answered.
+CORRUPT_GZIP = {"headers": {"Content-Encoding": "gzip"}, "content": b"not gzip"}
+
+
+@pytest.mark.parametrize("method,path,body,host", ROUTES)
+def test_a_corrupt_response_body_is_a_502_whose_outcome_is_unknown(
+    client, auth_headers, httpx_mock, caplog, method, path, body, host
+):
+    """Review round 2 item 2 (PR #25): a response body that fails to decode
+    is not a proxy bug, and Google answered, so a write may have been
+    applied. It must be a 502 saying the outcome is unknown, with one log line
+    and no traceback, not an unhandled 500."""
+    httpx_mock.add_response(**CORRUPT_GZIP)
+
+    with caplog.at_level(logging.INFO):
+        response = _send(client, auth_headers, method, path, body)
+
+    assert response.status_code == 502, response.text
+    payload = response.json()
+    assert payload["error"] == "backend_outcome_unknown"
+    assert host in payload["message"] and "DecodingError" in payload["message"]
+    assert "incorrect header check" not in payload["message"]  # httpx's own text stays out
+    [line] = _problems(caplog)
+    assert "DecodingError" in line.getMessage()
+    assert not any(r.exc_info for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "path,body,answered,error",
+    [
+        pytest.param(
+            "/calendar/v3/calendars/primary/events/e1",
+            None,
+            [],
+            "backend_error",
+            id="delete-lookup",
+        ),
+        pytest.param(
+            "/calendar/v3/calendars/primary/events/e1",
+            None,
+            [EVENT],
+            "backend_outcome_unknown",
+            id="delete",
+        ),
+        pytest.param(
+            "/calendar/v3/calendars/primary/events/e1/respond",
+            {"responseStatus": "accepted"},
+            [],
+            "backend_error",
+            id="respond-event-fetch",
+        ),
+        pytest.param(
+            "/calendar/v3/calendars/primary/events/e1/respond",
+            {"responseStatus": "accepted"},
+            [ATTENDING],
+            "backend_error",
+            id="respond-own-address-lookup",
+        ),
+        pytest.param(
+            "/calendar/v3/calendars/primary/events/e1/respond",
+            {"responseStatus": "accepted"},
+            [ATTENDING, {"id": "me@example.com"}],
+            "backend_outcome_unknown",
+            id="respond-patch",
+        ),
+    ],
+)
+def test_a_corrupt_response_body_on_a_calendar_write_says_whether_the_write_was_sent(
+    client, auth_headers, httpx_mock, path, body, answered, error
+):
+    """Review round 2 item 2 (PR #25): review item 7 narrowed delete's and
+    RSVP's four except clauses to RuntimeError, so a DecodingError there
+    became a 500. On the RSVP PATCH that is a write Google may have applied,
+    reported with no backend_outcome_unknown signal. A corrupt body on a
+    lookup means the write was not sent; on the write itself, the outcome is
+    unknown."""
+    for answer in answered:
+        httpx_mock.add_response(json=answer)
+    httpx_mock.add_response(**CORRUPT_GZIP)
+
+    response = client.request(
+        "DELETE" if body is None else "POST", path, json=body, headers=auth_headers
+    )
+
+    assert response.status_code == 502, response.text
+    payload = response.json()
+    assert payload["error"] == error
+    assert "DecodingError" in payload["message"]
+    if error == "backend_error":
+        assert "the write was not sent" in payload["message"]
+    assert len(httpx_mock.get_requests()) == len(answered) + 1

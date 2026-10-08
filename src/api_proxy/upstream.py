@@ -2,15 +2,28 @@
 
 import httpx
 
-# Transport failures on Google's side of the proxy: Google unreachable, not
-# answering in time, or dropping the connection. None of these is a fault in
-# the proxy. Deliberately narrower than httpx.TransportError, so that
-# LocalProtocolError, UnsupportedProtocol and ProxyError, which would point
-# at a request the proxy itself built badly, stay unhandled 500s.
-UPSTREAM_FAILURES = (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)
+# Failures between the proxy and Google: Google unreachable, not answering in
+# time, or dropping the connection; a forward proxy refusing to open the
+# tunnel (ProxyError); or a response body that cannot be decoded
+# (DecodingError, raised while reading a response Google already sent). None
+# of these is a fault in the proxy's own code. Deliberately narrower than
+# httpx.TransportError, so that LocalProtocolError and UnsupportedProtocol,
+# which would point at a request the proxy itself built badly, stay unhandled
+# 500s. TooManyRedirects is not listed: these clients leave follow_redirects
+# off, so httpx returns a redirect response instead of raising it.
+UPSTREAM_FAILURES = (
+    httpx.NetworkError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
+    httpx.ProxyError,
+    httpx.DecodingError,
+)
 
 # Failures raised before the request left the proxy, so Google never saw it.
-_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+# ProxyError is raised while the tunnel through the forward proxy is being
+# set up (a refused CONNECT, or a failed SOCKS handshake), before the request
+# to Google is written.
+_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ProxyError)
 
 
 # The 502 ``error`` value for a request that may have reached Google: no
@@ -20,7 +33,8 @@ BACKEND_OUTCOME_UNKNOWN = "backend_outcome_unknown"
 
 class UpstreamUnavailableError(RuntimeError):
     """
-    A request to a Google API failed in transport.
+    A request to a Google API failed in transport, or its response body could
+    not be decoded (see UPSTREAM_FAILURES).
 
     Subclasses RuntimeError, which the route handlers already catch and
     answer with a 502 and one log line. The message carries the upstream host
