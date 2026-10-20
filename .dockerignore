@@ -27,6 +27,7 @@ htmlcov/
 credentials.json
 token.json
 api_keys.json
+api_keys.json.lock
 *.json.example
 
 # Dev files

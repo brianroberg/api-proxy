@@ -6,7 +6,7 @@ import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from api_proxy.auth import verify_api_key
 from api_proxy.confirmation import (
@@ -20,6 +20,11 @@ from api_proxy.gmail.models import (
     DraftRequest,
     ModifyMessageRequest,
 )
+from api_proxy.upstream import (
+    UpstreamUnavailableError,
+    backend_failure_detail,
+    lookup_failure_detail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +36,8 @@ router = APIRouter(
 )
 
 # Regex for validating userId - basic validation, let Gmail handle the rest
-USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$|^me$")
+# \Z (not $) so a trailing newline can't sneak past the pattern
+USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\Z|^me\Z")
 
 # Regex for validating message/label IDs - alphanumeric with some special chars
 # Gmail IDs are typically base64-like strings
@@ -156,6 +162,17 @@ async def handle_confirmation(
     )
 
 
+def _lookup_failed(e: UpstreamUnavailableError) -> HTTPException:
+    """
+    The 502 for a lookup made ahead of an approval prompt that could not reach
+    Google. Raised before the prompt, as the calendar routes do, so the
+    operator is not asked to approve a write that cannot be sent; other
+    lookup failures still fall back to a prompt without the details.
+    """
+    logger.error(f"Backend communication error: {e}")
+    return HTTPException(status_code=502, detail=lookup_failure_detail(e))
+
+
 async def _resolve_label_names(user_id: str, label_ids: list[str]) -> list[str]:
     """
     Resolve Gmail label IDs to human-readable names.
@@ -182,6 +199,8 @@ async def _resolve_label_names(user_id: str, label_ids: list[str]) -> list[str]:
         data = response.json()
         id_to_name = {label["id"]: label["name"] for label in data.get("labels", [])}
         return [id_to_name.get(lid, lid) for lid in label_ids]
+    except UpstreamUnavailableError as e:
+        raise _lookup_failed(e) from e
     except Exception as e:
         logger.warning(f"Exception resolving label names: {e}")
         return label_ids
@@ -195,7 +214,8 @@ async def _fetch_message_metadata(user_id: str, message_id: str) -> tuple[str | 
         Tuple of (sender, subject). Returns (None, None) on non-fatal errors.
 
     Raises:
-        HTTPException: If the message does not exist (404).
+        HTTPException: If the message does not exist (404), or Google could
+            not be reached (502, before any approval is requested).
     """
     client = get_gmail_client()
     try:
@@ -231,6 +251,8 @@ async def _fetch_message_metadata(user_id: str, message_id: str) -> tuple[str | 
         return sender, subject
     except HTTPException:
         raise
+    except UpstreamUnavailableError as e:
+        raise _lookup_failed(e) from e
     except Exception as e:
         logger.warning(f"Exception fetching message metadata: {e}")
         return None, None
@@ -277,7 +299,7 @@ async def list_messages(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -310,7 +332,7 @@ async def get_message(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -343,7 +365,7 @@ async def get_thread(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -363,7 +385,7 @@ async def list_labels(request: Request, user_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -384,7 +406,7 @@ async def get_label(request: Request, user_id: str, label_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -450,7 +472,7 @@ async def modify_message(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -484,7 +506,7 @@ async def trash_message(request: Request, user_id: str, message_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -518,7 +540,7 @@ async def untrash_message(request: Request, user_id: str, message_id: str):
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -557,7 +579,7 @@ async def list_drafts(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -587,7 +609,7 @@ async def get_draft(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -623,7 +645,7 @@ async def create_draft(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -661,7 +683,7 @@ async def update_draft(
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e
 
 
@@ -682,11 +704,14 @@ async def delete_draft(
     try:
         response = await client.request("DELETE", path)
         if response.status_code == 204:
-            return JSONResponse(status_code=204, content=None)
+            # A 204 carries no content (RFC 9110). JSONResponse(content=None)
+            # would render the body "null", which uvicorn then rejects as
+            # longer than the declared Content-Length.
+            return Response(status_code=204)
         return await forward_response(response)
     except RuntimeError as e:
         logger.error(f"Backend communication error: {e}")
         raise HTTPException(
             status_code=502,
-            detail={"error": "backend_error", "message": str(e)},
+            detail=backend_failure_detail(e),
         ) from e

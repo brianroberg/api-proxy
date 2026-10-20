@@ -4,7 +4,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from api_proxy.auth import APIKeyManager
+from api_proxy.auth import APIKeyManager, KeysFileError
+
+# Exit status when the keys file could not be safely locked or read. Nothing
+# was written; distinct from 1 (no such key, or a rejected name) so a script
+# can tell "try again later" from "wrong name".
+EXIT_KEYS_FILE_UNAVAILABLE = 3
 
 
 def cmd_create(manager: APIKeyManager, args: argparse.Namespace) -> int:
@@ -138,7 +143,11 @@ def main() -> int:
         "show": cmd_show,
     }
 
-    return commands[args.command](manager, args)
+    try:
+        return commands[args.command](manager, args)
+    except KeysFileError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return EXIT_KEYS_FILE_UNAVAILABLE
 
 
 if __name__ == "__main__":

@@ -4,6 +4,13 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
+from api_proxy.upstream import UpstreamUnavailableError
+
+
+def _unreachable():
+    """What CalendarClient.request raises when Google cannot be reached."""
+    return UpstreamUnavailableError("www.googleapis.com", httpx.ConnectError("refused"))
+
 
 class TestListCalendars:
     """Tests for GET /calendar/v3/users/me/calendarList."""
@@ -355,7 +362,7 @@ class TestDeleteEvent:
         error aborts with a tagged 502 instead of attempting the DELETE."""
         with patch("api_proxy.calendar.handlers.get_calendar_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
+            mock_client.request = AsyncMock(side_effect=_unreachable())
             mock_get_client.return_value = mock_client
 
             response = client.delete(
